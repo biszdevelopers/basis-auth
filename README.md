@@ -83,12 +83,12 @@ Each client can restrict Microsoft accounts with `filterMode` and `filterContent
 Manage clients with the interactive TUI (numbered pickers, validated prompts, no flags needed):
 
 ```bash
-bun run clients          # menu: list, add, remove
+bun run clients          # menu: list, add, remove, edit
 bun run clients:add      # add-client walkthrough
 bun run clients:remove   # pick a client from a numbered list
 ```
 
-Adding walks through name, type (confidential/public), redirect URIs, resources (picked from the registered list), scopes, consent, and optional account filters. For confidential clients, leave the secret blank to auto-generate a `sk-...` secret; it is printed once (PostgreSQL stores only a scrypt hash, so copy it then). Passing a JSON definition without `clientId` still works non-interactively and also auto-generates a missing secret:
+Adding walks through name, type (confidential/public), redirect URIs, resources (picked from the registered list), scopes, consent, and optional account filters. For confidential clients, leave the secret blank to auto-generate a `sk-...` secret; it is printed once (PostgreSQL stores only a scrypt hash, so copy it then). Editing keeps the existing secret and owners unless you rotate or change the client type; a rotated secret is likewise shown once. Passing a JSON definition without `clientId` still works non-interactively and also auto-generates a missing secret:
 
 ```bash
 bun run clients:add -- '{"name":"Example","redirectUris":["https://example.test/callback"],"public":false,"resources":["urn:basis:api:example"]}'
@@ -96,6 +96,8 @@ bun run clients:remove -- 3fa85f64-5717-4562-b3fc-2c963f66afa6
 ```
 
 Removing a client cascades to its authorization data. Remove a client from `OIDC_CLIENTS_JSON` before deleting it, otherwise the startup seed will create it again.
+
+TUI-managed clients and resources live in the database only (no `OIDC_*_JSON` edits, no restart): new resource audiences are registered on the spot, new clients authorize instantly, and edits apply within ~60s (client-cache TTL).
 
 ## Downstream BFF integration
 

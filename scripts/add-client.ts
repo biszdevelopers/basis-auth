@@ -1,7 +1,6 @@
 import "dotenv/config";
-import { clientInputSchema, type ClientSeed } from "../src/config.js";
-import { seedConfiguration } from "../src/database/seed.js";
-import { generateClientSecret, requireDatabase, runAddFlow } from "./clients.js";
+import { clientInputSchema } from "../src/config.js";
+import { generateClientSecret, requireDatabase, runAddFlow, saveClient } from "./clients.js";
 
 const { db, pool } = requireDatabase();
 
@@ -17,8 +16,7 @@ try {
       parsed.clientSecret = generatedSecret;
     }
     const input = clientInputSchema.parse(parsed);
-    const client: ClientSeed = { ...input, clientId: crypto.randomUUID() };
-    await seedConfiguration(db, [client], []);
+    const client = await saveClient(db, input);
     process.stdout.write(`${client.clientId}\n`);
     if (generatedSecret) {
       process.stdout.write(`Client secret (copy now, only a hash is stored): ${generatedSecret}\n`);

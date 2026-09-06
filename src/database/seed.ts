@@ -13,7 +13,7 @@ export interface ClientOwner {
   role: "role.ADMIN" | "role.GENERAL";
 }
 
-async function hashSecret(secret: string): Promise<string> {
+export async function hashClientSecret(secret: string): Promise<string> {
   const salt = randomBytes(16);
   const digest = (await scrypt(secret, salt, 64)) as Buffer;
   return `scrypt:${salt.toString("base64url")}:${digest.toString("base64url")}`;
@@ -67,7 +67,7 @@ export async function seedConfiguration(
     const secretHash = client.clientSecret
       ? (await secretMatches(client.clientSecret, existing?.secretHash ?? null))
         ? existing!.secretHash
-        : await hashSecret(client.clientSecret)
+        : await hashClientSecret(client.clientSecret)
       : null;
 
     await db
