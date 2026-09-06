@@ -3,6 +3,7 @@ import type { AppConfig } from "../config.js";
 import type { IdentityService } from "../identity.js";
 import type { KeyService } from "./keys.js";
 import { createOAuthService, oauthServiceInternals } from "./service.js";
+import { resourceServers } from "../database/schema.js";
 
 const metadata = {
   name: "Portal",
@@ -93,5 +94,55 @@ describe("client lookup", () => {
     } as unknown as Parameters<typeof createOAuthService>[1];
     const missingService = createOAuthService(config, missingDb, {} as KeyService, {} as IdentityService);
     await expect(missingService.getClient("missing")).rejects.toThrow("not registered or has been disabled");
+  });
+});
+
+describe("authorization resource check", () => {
+  const clientRow = {
+    clientId: "client-1",
+    secretHash: "stored-secret-hash",
+    resources: ["urn:basis:api:missing"],
+    requireConsent: false,
+    filterMode: null,
+    filterContent: [],
+    metadata: {
+      name: "Portal",
+      owners: [{ id: "c6ba1588-03bb-4c61-a4e1-3c7c82e919b5", role: "role.ADMIN" }],
+      redirectUris: ["https://portal.example.test/callback"],
+      public: false,
+      scopes: ["openid"],
+    },
+  };
+  const execute = vi.fn(async () => [clientRow]);
+  const db = {
+    select: () => ({
+      from: (table: unknown) => ({
+        where: () => ({
+          limit: () => (table === resourceServers ? [] : { prepare: () => ({ execute }) }),
+        }),
+      }),
+    }),
+  } as unknown as Parameters<typeof createOAuthService>[1];
+  const config = {
+    issuer: "https://auth.example.test",
+    cookieKeys: ["a".repeat(32)],
+  } as AppConfig;
+  const service = createOAuthService(config, db, {} as KeyService, {} as IdentityService);
+
+  it("names the missing audience in the unknown-resource error", async () => {
+    await expect(
+      service.startAuthorization({
+        initialUri: "/oauth/authorize?client_id=client-1",
+        clientId: "client-1",
+        redirectUri: "https://portal.example.test/callback",
+        responseType: "code",
+        scope: "openid",
+        resources: ["urn:basis:api:missing"],
+        state: "state",
+        nonce: "nonce",
+        codeChallenge: "a".repeat(43),
+        codeChallengeMethod: "S256",
+      }),
+    ).rejects.toThrow('Resource server "urn:basis:api:missing" is not registered');
   });
 });

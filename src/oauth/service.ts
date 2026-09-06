@@ -144,7 +144,14 @@ export function createOAuthService(
       .from(resourceServers)
       .where(eq(resourceServers.audience, resource))
       .limit(1);
-    if (!resourceServer) throw new OAuthError("invalid_target", "Unknown resource server", 14407);
+    if (!resourceServer) {
+      throw new OAuthError(
+        "invalid_target",
+        `Resource server "${resource}" is not registered; add it with "bun run clients" or OIDC_RESOURCES_JSON`,
+        400,
+        14407,
+      );
+    }
     const customScopes = scopes.filter((scope) => !identityScopes.has(scope));
     if (!scopesCover(resourceServer.scopes, customScopes)) {
       throw new OAuthError("invalid_scope", "A requested scope is not supported by the resource", 400, 14401);

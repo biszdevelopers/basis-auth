@@ -85,7 +85,7 @@ export async function deleteClientById(db: Database, clientId: string): Promise<
   return removed[0]!.clientId;
 }
 
-function printClients(clients: ListedClient[]): void {
+export function printClients(clients: ListedClient[], known: Set<string>): void {
   if (!clients.length) {
     process.stdout.write("No clients registered.\n");
     return;
@@ -94,7 +94,18 @@ function printClients(clients: ListedClient[]): void {
     process.stdout.write(`${index + 1}) ${client.name} (${client.clientId})${client.public ? " [public]" : ""}\n`);
     if (client.redirectUris.length) process.stdout.write(`   redirects: ${client.redirectUris.join(", ")}\n`);
     if (client.resources.length) process.stdout.write(`   resources: ${client.resources.join(", ")}\n`);
+    const missing = client.resources.filter((audience) => !known.has(audience));
+    if (missing.length) {
+      process.stdout.write(
+        `   WARNING: not registered as resource servers: ${missing.join(", ")} — re-save via Edit to register live\n`,
+      );
+    }
   });
+}
+
+async function resourceAudiences(db: Database): Promise<Set<string>> {
+  const rows = await db.select({ audience: resourceServers.audience }).from(resourceServers);
+  return new Set(rows.map((row) => row.audience));
 }
 
 // A client referencing an unregistered audience fails authorize with
@@ -251,8 +262,7 @@ export async function promptNewClient(rl: Interface, audiences: string[]): Promi
 
 export async function runAddFlow(db: Database): Promise<void> {
   requireTty();
-  const resources = await db.select().from(resourceServers);
-  const known = new Set(resources.map((resource) => resource.audience));
+  const known = await resourceAudiences(db);
   const rl = createInterface({ input, output });
   try {
     const created = await promptNewClient(rl, [...known].sort());
@@ -288,7 +298,7 @@ async function listedOrEmpty(db: Database): Promise<ListedClient[] | null> {
     process.stdout.write("No clients registered.\n");
     return null;
   }
-  printClients(clients);
+  printClients(clients, await resourceAudiences(db));
   return clients;
 }
 
@@ -461,8 +471,7 @@ export async function runEditFlow(db: Database): Promise<void> {
   requireTty();
   const clients = await listedOrEmpty(db);
   if (!clients) return;
-  const resources = await db.select().from(resourceServers);
-  const known = new Set(resources.map((resource) => resource.audience));
+  const known = await resourceAudiences(db);
   const rl = createInterface({ input, output });
   try {
     const selected = await pickClient(rl, clients, "edit");
@@ -496,7 +505,7 @@ export async function runMenu(db: Database): Promise<void> {
     } finally {
       rl.close();
     }
-    if (choice === "1") printClients(await listClients(db));
+    if (choice === "1") await listedOrEmpty(db);
     else if (choice === "2") await runAddFlow(db);
     else if (choice === "3") await runRemoveFlow(db);
     else if (choice === "4") await runEditFlow(db);

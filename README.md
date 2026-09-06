@@ -97,7 +97,7 @@ bun run clients:remove -- 3fa85f64-5717-4562-b3fc-2c963f66afa6
 
 Removing a client cascades to its authorization data. Remove a client from `OIDC_CLIENTS_JSON` before deleting it, otherwise the startup seed will create it again.
 
-TUI-managed clients and resources live in the database only (no `OIDC_*_JSON` edits, no restart): new resource audiences are registered on the spot, new clients authorize instantly, and edits apply within ~60s (client-cache TTL).
+TUI-managed clients and resources live in the database only (no `OIDC_*_JSON` edits, no restart): new resource audiences are registered on the spot, new clients authorize instantly, and edits apply within ~60s (client-cache TTL). The list flags any resource a client references that has no registry row with a `WARNING` — re-save that client via Edit to register it live.
 
 ## Downstream BFF integration
 
@@ -159,7 +159,7 @@ These are NOT Http response codes.
 | 14100 | invalid
 | 14429 | unsupported_response_type | Unsupported response type |
 | 14401 | invalid_scope | Client requests one or more scopes that is not configured or permitted |
-| 14407 | unknown_resource | One or more selected resource of the client is not supported or not found. This usually shouldn't happen since client resource configuration and schemed and automated. |
+| 14407 | unknown_resource | The requested resource audience has no `resource_servers` row. The error names the audience; register it by re-saving the client via `bun run clients` or adding it to `OIDC_RESOURCES_JSON` and restarting. |
 | 14501 | invalid_target | One or more resources is not registered for this application |
 | 2400 | invalid_request | Frontend authentication flow cookie not found or expired |
 | 50040 | server_error | Internal server error occured during login, such as connection error with microsoft login / authentication endpoint |
