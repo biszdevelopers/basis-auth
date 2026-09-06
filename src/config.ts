@@ -117,6 +117,14 @@ export async function loadConfig(source: NodeJS.ProcessEnv = process.env): Promi
   if (issuerUrl.pathname !== "/" || issuerUrl.search || issuerUrl.hash) {
     throw new Error("OIDC_ISSUER must be an origin without a path, query, or fragment");
   }
+  const issuerHost = issuerUrl.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (env.NODE_ENV === "development" && issuerHost !== "localhost" && issuerHost !== "127.0.0.1" && issuerHost !== "::1") {
+    throw new Error(
+      `OIDC_ISSUER points at ${issuerHost} but NODE_ENV is development: development cookie settings ` +
+        "(Domain=localhost) only work with a localhost issuer and browsers drop every session otherwise. " +
+        "Set NODE_ENV=production with production secrets.",
+    );
+  }
   const microsoftValues = [
     env.MICROSOFT_ISSUER,
     env.MICROSOFT_CLIENT_ID,

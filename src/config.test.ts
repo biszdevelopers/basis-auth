@@ -88,4 +88,19 @@ describe("configuration", () => {
       loadConfig({ ...base, OIDC_COOKIE_KEYS: "changeme-changeme-changeme-changeme" }),
     ).rejects.toThrow("must be replaced with real randomly generated values");
   });
+
+  it("rejects development mode with a non-localhost issuer", async () => {
+    await expect(
+      loadConfig({ ...base, NODE_ENV: "development", OIDC_ISSUER: "https://auth.example.test" }),
+    ).rejects.toThrow("NODE_ENV=production");
+  });
+
+  it("allows development mode with a localhost issuer", async () => {
+    const config = await loadConfig({
+      ...base,
+      NODE_ENV: "development",
+      OIDC_ISSUER: "http://localhost:3000",
+    });
+    expect(config.issuer).toBe("http://localhost:3000");
+  });
 });

@@ -5,6 +5,9 @@ import { ToastProvider } from "./components/ui/toast";
 
 const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
 
+const INTERACTION_ATTEMPTS_KEY = "basis_interaction_attempts";
+const MAX_INTERACTION_RELOADS = 2;
+
 export function App() {
 
 
@@ -24,12 +27,28 @@ export function App() {
     setStatus((status) => status.page === "consent" ? { ...status, loading: false } : status);
   }, []);
 
+  const reloadOrFail = (res: Response) => {
+    const attempts = Number(sessionStorage.getItem(INTERACTION_ATTEMPTS_KEY) ?? 0) + 1;
+    sessionStorage.setItem(INTERACTION_ATTEMPTS_KEY, String(attempts));
+    if (attempts > MAX_INTERACTION_RELOADS) {
+      animate("content", {
+        status: res.status,
+        error: "invalid_request",
+        code: 2400,
+        error_description: "The sign-in session is unavailable. Reload the page to try again.",
+      });
+      return;
+    }
+    window.location.replace("/oauth/authorize");
+  };
+
   const resetToLogin = async () => {
     const res = await fetch("/oauth/interaction", { headers: { Accept: "application/json" } });
     if (!res.ok) {
-      window.location.replace("/oauth/authorize");
+      reloadOrFail(res);
       return;
     }
+    sessionStorage.removeItem(INTERACTION_ATTEMPTS_KEY);
     const loginContent = await res.json();
     await delay(500);
     setStatus({ loading: false, page: "none", login: undefined });
@@ -63,10 +82,13 @@ export function App() {
 
       const res = await fetch("/oauth/interaction", { headers: { Accept: "application/json" } });
       if (!res.ok) {
-        // No interaction cookie — start the OAuth flow
-        window.location.replace("/oauth/authorize");
+        // No interaction cookie — restart the flow. Bounded: if cookies are
+        // being dropped (or the backend is down) this would otherwise reload
+        // /oauth/authorize forever, so fail onto the error screen instead.
+        reloadOrFail(res);
         return;
       }
+      sessionStorage.removeItem(INTERACTION_ATTEMPTS_KEY);
       const loginContent = await res.json()
       await delay(300);
 

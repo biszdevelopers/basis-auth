@@ -64,3 +64,33 @@ it("keeps loading the consent page until the profile is rendered", async () => {
   );
   expect(screen.getByTestId("main-content")).toHaveClass("opacity-100");
 });
+
+it("stops reloading and shows an error when the interaction stays unavailable", async () => {
+  sessionStorage.clear();
+  const replaceMock = vi.fn();
+  const originalLocation = window.location;
+  Object.defineProperty(window, "location", {
+    configurable: true,
+    value: { replace: replaceMock },
+  });
+  vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 400 }) as Response));
+
+  try {
+    const first = render(<App />);
+    await waitFor(() => expect(replaceMock).toHaveBeenCalledTimes(1));
+    first.unmount();
+
+    const second = render(<App />);
+    await waitFor(() => expect(replaceMock).toHaveBeenCalledTimes(2));
+    second.unmount();
+
+    render(<App />);
+    expect(
+      await screen.findByText(/sign-in session is unavailable/),
+    ).toBeInTheDocument();
+    expect(replaceMock).toHaveBeenCalledTimes(2);
+  } finally {
+    sessionStorage.clear();
+    Object.defineProperty(window, "location", { configurable: true, value: originalLocation });
+  }
+});
