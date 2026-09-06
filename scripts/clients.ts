@@ -48,6 +48,7 @@ export interface ListedClient {
   name: string;
   public: boolean;
   redirectUris: string[];
+  resources: string[];
 }
 
 export async function listClients(db: Database): Promise<ListedClient[]> {
@@ -60,6 +61,7 @@ export async function listClients(db: Database): Promise<ListedClient[]> {
         name: metadata.name || row.clientId,
         public: metadata.public ?? row.secretHash === null,
         redirectUris: metadata.redirectUris ?? [],
+        resources: row.resources ?? [],
       };
     })
     .sort((a, b) => a.name.localeCompare(b.name));
@@ -82,6 +84,7 @@ function printClients(clients: ListedClient[]): void {
   clients.forEach((client, index) => {
     process.stdout.write(`${index + 1}) ${client.name} (${client.clientId})${client.public ? " [public]" : ""}\n`);
     if (client.redirectUris.length) process.stdout.write(`   redirects: ${client.redirectUris.join(", ")}\n`);
+    if (client.resources.length) process.stdout.write(`   resources: ${client.resources.join(", ")}\n`);
   });
 }
 
