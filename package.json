@@ -22,6 +22,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "keys:generate": "tsx scripts/generate-jwks.ts",
+    "clients": "tsx scripts/clients.ts",
     "clients:add": "tsx scripts/add-client.ts",
     "clients:remove": "tsx scripts/remove-client.ts",
     "db:generate": "drizzle-kit generate",

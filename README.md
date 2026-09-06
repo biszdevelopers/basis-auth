@@ -80,13 +80,22 @@ A typical authorization request is:
 
 Each client can restrict Microsoft accounts with `filterMode` and `filterContent` in `OIDC_CLIENTS_JSON`. Set `filterMode` to `"whitelist"` to allow only the normalized Microsoft email/unique names in `filterContent`, or `"blacklist"` to reject those names. Leave the mode as `null` with an empty list to allow all accounts. Administrators can also set `users.disabled` to block an account across every client; blocked sign-ins return to the authorization page with an error.
 
-To create a client directly in the database, pass its JSON definition without `clientId`; the command prints the generated UUID. Remove a client with that UUID. Removing a client cascades to its authorization data.
-Remove a client from `OIDC_CLIENTS_JSON` before deleting it, otherwise the startup seed will create it again.
+Manage clients with the interactive TUI (numbered pickers, validated prompts, no flags needed):
 
 ```bash
-bun run clients:add -- '{"name":"Example","clientSecret":"replace-with-a-long-secret","redirectUris":["https://example.test/callback"],"public":false,"resources":["urn:basis:api:example"]}'
+bun run clients          # menu: list, add, remove
+bun run clients:add      # add-client walkthrough
+bun run clients:remove   # pick a client from a numbered list
+```
+
+Adding walks through name, type (confidential/public), redirect URIs, resources (picked from the registered list), scopes, consent, and optional account filters. For confidential clients, leave the secret blank to auto-generate a `sk-...` secret; it is printed once (PostgreSQL stores only a scrypt hash, so copy it then). Passing a JSON definition without `clientId` still works non-interactively and also auto-generates a missing secret:
+
+```bash
+bun run clients:add -- '{"name":"Example","redirectUris":["https://example.test/callback"],"public":false,"resources":["urn:basis:api:example"]}'
 bun run clients:remove -- 3fa85f64-5717-4562-b3fc-2c963f66afa6
 ```
+
+Removing a client cascades to its authorization data. Remove a client from `OIDC_CLIENTS_JSON` before deleting it, otherwise the startup seed will create it again.
 
 ## Downstream BFF integration
 

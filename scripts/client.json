@@ -1,7 +1,0 @@
-{
-  "name": "DevConnect Portal",
-  "clientSecret": "sk-fc8189fb63af8f0fdcc21a01b4b2f9c3d2ab7a4aba954aab103ba0bbe07717bc",
-  "redirectUris": ["https://portal.bisz.dev/auth/callback"],
-  "public": false,
-  "resources": ["urn:basis:api"]
-}
