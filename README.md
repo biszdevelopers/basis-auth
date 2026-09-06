@@ -55,7 +55,7 @@ Development serves the React build and OAuth endpoints from Hono at `http://loca
 
 The server applies checked-in Drizzle migrations and idempotently upserts configured clients and resource servers during startup. Removed configuration entries are not automatically deleted.
 
-Production must set an HTTPS `OIDC_ISSUER`, persistent private JWKS, two or more strong cookie keys, Microsoft credentials, and a TLS-enabled PostgreSQL connection. For signing-key rotation, publish the new public key alongside the active key, deploy it everywhere, make it the first private key in the configured JWKS, and retain old public keys until all tokens they signed have expired.
+Production must set `NODE_ENV=production`, an HTTPS `OIDC_ISSUER`, persistent private JWKS, two or more strong cookie keys, Microsoft credentials, and a TLS-enabled PostgreSQL connection. For signing-key rotation, publish the new public key alongside the active key, deploy it everywhere, make it the first private key in the configured JWKS, and retain old public keys until all tokens they signed have expired.
 
 ## Client and resource registration
 
