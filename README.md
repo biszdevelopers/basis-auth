@@ -83,7 +83,7 @@ Each client can restrict Microsoft accounts with `filterMode` and `filterContent
 Manage clients with the interactive TUI (numbered pickers, validated prompts, no flags needed):
 
 ```bash
-bun run clients          # menu: list, add, remove, edit
+bun run clients          # menu: list, add, remove, edit, register resource
 bun run clients:add      # add-client walkthrough
 bun run clients:remove   # pick a client from a numbered list
 ```

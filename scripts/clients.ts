@@ -494,10 +494,38 @@ export async function runEditFlow(db: Database): Promise<void> {
   }
 }
 
+export async function runRegisterResourceFlow(db: Database): Promise<void> {
+  requireTty();
+  const known = await resourceAudiences(db);
+  if (known.size) {
+    process.stdout.write("Registered resources:\n");
+    [...known].sort().forEach((audience, index) => process.stdout.write(`  ${index + 1}) ${audience}\n`));
+  }
+  const rl = createInterface({ input, output });
+  try {
+    const audience = await ask(rl, "New resource audience (e.g. urn:basis:api:example)");
+    if (!audience) {
+      process.stdout.write("Cancelled.\n");
+      return;
+    }
+    if (known.has(audience)) {
+      process.stdout.write(`${audience} is already registered.\n`);
+      return;
+    }
+    const scopes = splitList(await ask(rl, `Scopes for ${audience} (comma-separated, blank = none)`));
+    await ensureResourcesRegistered(db, [{ audience, scopes }]);
+    process.stdout.write(`Registered ${audience} live, no restart needed\n`);
+  } finally {
+    rl.close();
+  }
+}
+
 export async function runMenu(db: Database): Promise<void> {
   requireTty();
   for (;;) {
-    process.stdout.write("\nClients\n1) List clients\n2) Add client\n3) Remove client\n4) Edit client\n5) Quit\n");
+    process.stdout.write(
+      "\nClients\n1) List clients\n2) Add client\n3) Remove client\n4) Edit client\n5) Register resource\n6) Quit\n",
+    );
     const rl = createInterface({ input, output });
     let choice: string;
     try {
@@ -509,8 +537,9 @@ export async function runMenu(db: Database): Promise<void> {
     else if (choice === "2") await runAddFlow(db);
     else if (choice === "3") await runRemoveFlow(db);
     else if (choice === "4") await runEditFlow(db);
-    else if (choice === "5" || /^q(uit)?$/i.test(choice)) return;
-    else process.stdout.write("Enter 1-5.\n");
+    else if (choice === "5") await runRegisterResourceFlow(db);
+    else if (choice === "6" || /^q(uit)?$/i.test(choice)) return;
+    else process.stdout.write("Enter 1-6.\n");
   }
 }
 
