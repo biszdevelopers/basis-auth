@@ -1,28 +1,35 @@
 import {
+  accessTokenClaimsSchema,
+  type AccessTokenClaims as SchemaAccessTokenClaims,
+} from "@basis/schema/auth";
+import { DelegatedPermissionSet } from "@basis/schema/permissions";
+import {
   createLocalJWKSet,
   importJWK,
   jwtVerify,
   SignJWT,
   type JWK,
-  type JWTPayload,
 } from "jose";
 import type { AppConfig } from "../config.js";
 import type { IdentityService } from "../identity.js";
 
 const privateFields = new Set(["d", "p", "q", "dp", "dq", "qi", "oth", "k"]);
+const basisAuthAccessTokenClaimsSchema = accessTokenClaimsSchema
+  .omit({ aud: true, permissions: true })
+  .extend({
+    aud: accessTokenClaimsSchema.shape.aud.optional(),
+    permissions: accessTokenClaimsSchema.shape.permissions.optional(),
+  });
 
 function toPublicJwk(jwk: JWK): JWK {
   return Object.fromEntries(Object.entries(jwk).filter(([key]) => !privateFields.has(key))) as JWK;
 }
 
-export interface AccessTokenClaims extends JWTPayload {
-  sub: string;
-  client_id: string;
-  scope: string;
-  permissions?: string[];
-  jti: string;
-  iat: number;
-}
+export type AccessTokenClaims = Pick<
+  SchemaAccessTokenClaims,
+  "sub" | "client_id" | "scope" | "jti" | "iat" | "exp" | "iss"
+> &
+  Partial<Pick<SchemaAccessTokenClaims, "aud" | "permissions">>;
 
 type UserState = { id: string; disabled: boolean; tokensValidAfter: Date | null };
 type Account = Awaited<ReturnType<IdentityService["findAccount"]>>;
@@ -50,7 +57,9 @@ export async function createKeyService(config: AppConfig, identity: IdentityServ
     if (!user || user.disabled) throw new Error("Cannot issue an access token for a missing or disabled user");
     const includePermissions = input.scopes.includes("permissions");
     const permissions = includePermissions
-      ? (preloaded?.permissions ?? (await identity.permissionsFor(input.userId)))
+      ? [...new DelegatedPermissionSet(
+          preloaded?.permissions ?? (await identity.permissionsFor(input.userId)),
+        ).permissions]
       : [];
     const token = new SignJWT({
       client_id: input.clientId,
@@ -105,19 +114,11 @@ export async function createKeyService(config: AppConfig, identity: IdentityServ
       typ: "at+jwt",
       ...(audience ? { audience } : {}),
     });
-    if (
-      !payload.sub ||
-      typeof payload.client_id !== "string" ||
-      typeof payload.scope !== "string" ||
-      (payload.permissions !== undefined &&
-        (!Array.isArray(payload.permissions) ||
-          !payload.permissions.every((permission) => typeof permission === "string"))) ||
-      typeof payload.jti !== "string" ||
-      typeof payload.iat !== "number"
-    ) {
+    const parsed = basisAuthAccessTokenClaimsSchema.safeParse(payload);
+    if (!parsed.success) {
       throw new Error("Access token claims are invalid");
     }
-    const claims = payload as AccessTokenClaims;
+    const claims = parsed.data as AccessTokenClaims;
     const user = await identity.findUserCompact(claims.sub);
     if (
       !user ||

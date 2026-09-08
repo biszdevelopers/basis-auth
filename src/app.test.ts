@@ -1,4 +1,5 @@
 import { createHmac } from "node:crypto";
+import { APIError as SchemaAPIError } from "@basis/schema/api";
 import { describe, expect, it, vi } from "vitest";
 import { createApp } from "./app.js";
 import type { AppConfig } from "./config.js";
@@ -51,6 +52,18 @@ describe("protocol metadata", () => {
 });
 
 describe("OAuth errors", () => {
+  it("uses the standardized Basis API error without changing its payload", () => {
+    const error = new OAuthError("invalid_request", "Request is invalid", 400, 14000);
+
+    expect(error).toBeInstanceOf(SchemaAPIError);
+    expect(error.toJSON()).toEqual({
+      status: 400,
+      code: 14000,
+      error: "invalid_request",
+      error_description: "Request is invalid",
+    });
+  });
+
   it("returns the specific token error without an ambiguous bearer challenge", async () => {
     const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const oauth = {

@@ -383,6 +383,26 @@ describe("key service — doubled battery", () => {
     expect(decodeJwt(token).permissions).toEqual(["participant", "admin"]);
   });
 
+  it("canonicalizes standardized delegated permissions in access tokens", async () => {
+    const config = buildConfig();
+    const jwk = await rsaJwk();
+    (config.jwks as { keys: unknown[] }).keys = [jwk];
+    const identity = {
+      findUser: async () => ({ id: USER_ID, disabled: false, tokensValidAfter: null }),
+      permissionsFor: async () => ["users.READ"],
+    } as unknown as IdentityService;
+    const keys = await createKeyService(config, identity);
+
+    const token = await keys.issueAccessToken({
+      userId: USER_ID,
+      clientId: "c",
+      scopes: ["openid", "permissions"],
+      resource: "urn:basis:api:test",
+    });
+
+    expect(decodeJwt(token).permissions).toEqual(["Users.read"]);
+  });
+
   it("verifies a token without supplying an audience even when one was embedded", async () => {
     const config = buildConfig();
     const jwk = await rsaJwk();
