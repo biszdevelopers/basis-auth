@@ -61,6 +61,8 @@ Production must set `NODE_ENV=production`, an HTTPS `OIDC_ISSUER`, persistent pr
 
 `OIDC_RESOURCES_JSON` declares API audiences and the scopes each API accepts. `OIDC_CLIENTS_JSON` declares which resources and scopes each application may request.
 
+For basishacks, register the resource audience `devconnect://nethack.bisz.dev`. The confidential client and resource must allow this exact delegated union: `Profile.all Projects.read.all Projects.write.self Teams.all Voting.all Judging.all Seasons.all Files.all Chatbot.use Database.export`; the client also requests `openid profile email offline_access`. `.all` is the only hierarchy wildcard and grants concrete descendant scopes through the shared `@basis/schema` matcher. `.*` is not supported. The complete JSON examples are in `.env.example`.
+
 Confidential BFF clients use `client_secret_basic`; PostgreSQL stores only a scrypt hash of the configured secret. Public clients use `token_endpoint_auth_method=none`. Every authorization request from either client type must include a fresh RFC 7636 verifier-derived `code_challenge` and `code_challenge_method=S256`. The token request must include the matching `code_verifier`; `nonce` remains an additional OIDC replay binding and is not a substitute for PKCE.
 
 A typical authorization request is:

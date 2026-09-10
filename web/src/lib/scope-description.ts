@@ -13,6 +13,46 @@ const knownScopes: Record<string, Omit<ScopeDescription, "scope">> = {
     sensitive: true,
   },
   permissions: { description: "Access your Basis permissions", sensitive: true },
+  "Profile.all": {
+    description: "View and update all Network Hackathon profile data",
+    sensitive: true,
+  },
+  "Projects.read.all": {
+    description: "View all Network Hackathon projects, including your own and others' projects",
+    sensitive: false,
+  },
+  "Projects.write.self": {
+    description: "Create and update your own Network Hackathon project",
+    sensitive: true,
+  },
+  "Teams.all": {
+    description: "View and manage all Network Hackathon team and membership operations",
+    sensitive: true,
+  },
+  "Voting.all": {
+    description: "View and perform all Network Hackathon voting operations for your account",
+    sensitive: true,
+  },
+  "Judging.all": {
+    description: "View and perform all judging operations for assigned Network Hackathon projects",
+    sensitive: true,
+  },
+  "Seasons.all": {
+    description: "Perform all Network Hackathon season and event-setting operations",
+    sensitive: true,
+  },
+  "Files.all": {
+    description: "View and manage all Network Hackathon debug files",
+    sensitive: true,
+  },
+  "Chatbot.use": {
+    description: "Use the Network Hackathon chatbot",
+    sensitive: false,
+  },
+  "Database.export": {
+    description: "Export Network Hackathon data",
+    sensitive: true,
+  },
 };
 
 function words(value: string) {
