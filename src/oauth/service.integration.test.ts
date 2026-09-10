@@ -28,7 +28,7 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
       OIDC_ISSUER: "https://auth.example.test",
       OIDC_COOKIE_KEYS: "a".repeat(32),
       OIDC_RESOURCES_JSON: JSON.stringify([
-        { audience: "urn:basis:api:projects", scopes: ["projects.read"] },
+        { audience: "urn:basis:api:projects", scopes: ["nethack.access"] },
       ]),
       OIDC_CLIENTS_JSON: JSON.stringify([
         {
@@ -36,7 +36,8 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
           clientSecret: "portal-secret-long-enough",
           redirectUris: ["https://portal.example.test/callback"],
           public: false,
-          scopes: ["openid", "profile", "email", "permissions", "offline_access", "projects.read"],
+          scopes: ["nethack.access"],
+          permissions: [{ key: "nethack.Projects.read.all", description: "View all projects" }],
           resources: ["urn:basis:api:projects"],
           requireConsent: false,
         },
@@ -66,6 +67,7 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
           role: "role.ADMIN",
         },
       ],
+      permissions: [{ key: "nethack.Projects.read.all", description: "View all projects" }],
     });
   });
 
@@ -84,7 +86,7 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
       clientId: "portal",
       redirectUri: "https://portal.example.test/callback",
       responseType: "code",
-      scope: "openid profile email permissions offline_access projects.read",
+      scope: "openid profile email offline_access nethack.access",
       resources: ["urn:basis:api:projects"],
       state: "state",
       nonce: "nonce",

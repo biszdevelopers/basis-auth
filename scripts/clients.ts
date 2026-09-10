@@ -3,7 +3,12 @@ import { randomBytes } from "node:crypto";
 import { stdin as input, stdout as output } from "node:process";
 import { createInterface, type Interface } from "node:readline/promises";
 import { eq } from "drizzle-orm";
-import { clientInputSchema, type ClientSeed } from "../src/config.js";
+import {
+  clientInputSchema,
+  permissionDefinitionSchema,
+  type ClientSeed,
+  type PermissionDefinition,
+} from "../src/config.js";
 import { createDatabase, type Database } from "../src/database/client.js";
 import {
   hashClientSecret,
@@ -41,6 +46,15 @@ function requireTty(): void {
   }
 }
 
+function parsePermissionDefinitions(value: string): PermissionDefinition[] {
+  if (!value) return [];
+  try {
+    return permissionDefinitionSchema.array().parse(JSON.parse(value));
+  } catch {
+    throw new Error('Permission definitions must be a JSON array of {"key","description"} objects');
+  }
+}
+
 async function ask(rl: Interface, question: string, defaultValue = ""): Promise<string> {
   const answer = (await rl.question(defaultValue ? `${question} [${defaultValue}]: ` : `${question}: `)).trim();
   return answer || defaultValue;
@@ -58,6 +72,7 @@ export interface ListedClient {
   public: boolean;
   redirectUris: string[];
   resources: string[];
+  permissionDefinitionCount: number;
 }
 
 export async function listClients(db: Database): Promise<ListedClient[]> {
@@ -71,6 +86,7 @@ export async function listClients(db: Database): Promise<ListedClient[]> {
         public: metadata.public ?? row.secretHash === null,
         redirectUris: metadata.redirectUris ?? [],
         resources: row.resources ?? [],
+        permissionDefinitionCount: metadata.permissions?.length ?? 0,
       };
     })
     .sort((a, b) => a.name.localeCompare(b.name));
@@ -94,6 +110,7 @@ export function printClients(clients: ListedClient[], known: Set<string>): void 
     process.stdout.write(`${index + 1}) ${client.name} (${client.clientId})${client.public ? " [public]" : ""}\n`);
     if (client.redirectUris.length) process.stdout.write(`   redirects: ${client.redirectUris.join(", ")}\n`);
     if (client.resources.length) process.stdout.write(`   resources: ${client.resources.join(", ")}\n`);
+    process.stdout.write(`   permission definitions: ${client.permissionDefinitionCount}\n`);
     const missing = client.resources.filter((audience) => !known.has(audience));
     if (missing.length) {
       process.stdout.write(
@@ -164,13 +181,13 @@ async function promptResources(rl: Interface, audiences: string[], initial: stri
     audiences.forEach((audience, index) => process.stdout.write(`  ${index + 1}) ${audience}\n`));
   }
   for (;;) {
-    const resources = splitList(await ask(rl, "Resources (comma-separated numbers or values)", initial)).map(
+    const resources = splitList(await ask(rl, "Dedicated resource (number or value)", initial)).map(
       (entry) => {
         const byNumber = /^\d+$/.test(entry) ? audiences[Number(entry) - 1] : undefined;
         return byNumber ?? entry;
       },
     );
-    if (!resources.length) process.stdout.write("At least one resource is required.\n");
+    if (resources.length !== 1) process.stdout.write("Exactly one dedicated resource is required.\n");
     else return resources;
   }
 }
@@ -204,6 +221,7 @@ function printClientSummary(input: {
   redirectUris: string[];
   resources: string[];
   scopes: string[];
+  permissions: PermissionDefinition[];
   requireConsent: boolean;
   filterMode: "whitelist" | "blacklist" | null;
   filterContent: string[];
@@ -212,6 +230,7 @@ function printClientSummary(input: {
     `\nName: ${input.name ?? "(none)"}\nType: ${input.public ? "public" : "confidential"}\n` +
       `Redirects: ${input.redirectUris.join(", ")}\nResources: ${input.resources.join(", ")}\n` +
       `Scopes: ${input.scopes.join(", ")}\nConsent: ${input.requireConsent ? "shown" : "skipped"}\n` +
+      `Permission definitions: ${input.permissions.length}\n` +
       `Filter: ${input.filterMode ?? "none"}${input.filterContent.length ? ` (${input.filterContent.join(", ")})` : ""}\n`,
   );
 }
@@ -238,7 +257,10 @@ export async function promptNewClient(rl: Interface, audiences: string[]): Promi
   const resources = await promptResources(rl, audiences, "");
   const resourceScopes = await promptMissingResourceScopes(rl, resources, new Set(audiences));
 
-  const scopes = splitList(await ask(rl, "Scopes (comma-separated)", "openid, profile, email"));
+  const scopes = splitList(await ask(rl, "Resource scopes (comma-separated)", ""));
+  const permissions = parsePermissionDefinitions(
+    await ask(rl, 'Permission definitions (JSON array of {"key","description"})', "[]"),
+  );
   const requireConsent = await askYesNo(rl, "Show consent screen?", true);
   const filterMode = await promptFilterMode(rl, "");
   const filterContent = filterMode ? splitList(await ask(rl, "Filter emails (comma-separated)")) : [];
@@ -249,6 +271,7 @@ export async function promptNewClient(rl: Interface, audiences: string[]): Promi
     redirectUris,
     public: isPublic,
     ...(scopes.length ? { scopes } : {}),
+    permissions,
     resources,
     requireConsent,
     filterMode,
@@ -336,6 +359,7 @@ export interface ClientDetail {
   hasSecret: boolean;
   redirectUris: string[];
   scopes: string[];
+  permissions: PermissionDefinition[];
   resources: string[];
   requireConsent: boolean;
   filterMode: "whitelist" | "blacklist" | null;
@@ -354,6 +378,7 @@ export async function getClientDetail(db: Database, clientId: string): Promise<C
     hasSecret: row.secretHash !== null,
     redirectUris: metadata.redirectUris ?? [],
     scopes: metadata.scopes ?? [],
+    permissions: metadata.permissions ?? [],
     resources: row.resources ?? [],
     requireConsent: row.requireConsent,
     filterMode: row.filterMode ?? null,
@@ -368,6 +393,7 @@ export interface EditedClient {
   newSecret: string | null | undefined;
   redirectUris: string[];
   scopes: string[];
+  permissions: PermissionDefinition[];
   resources: string[];
   requireConsent: boolean;
   filterMode: "whitelist" | "blacklist" | null;
@@ -403,6 +429,13 @@ export async function promptEditClient(
 
   const scopesRaw = await ask(rl, "Scopes (comma-separated, blank = keep)", current.scopes.join(", "));
   const scopes = scopesRaw === current.scopes.join(", ") ? current.scopes : splitList(scopesRaw);
+  const permissions = parsePermissionDefinitions(
+    await ask(
+      rl,
+      'Permission definitions (JSON array of {"key","description"})',
+      JSON.stringify(current.permissions),
+    ),
+  );
   const requireConsent = await askYesNo(rl, "Show consent screen?", current.requireConsent);
   const filterMode = await promptFilterMode(rl, current.filterMode ?? "");
   const filterDefault = filterMode === current.filterMode ? current.filterContent.join(", ") : "";
@@ -414,6 +447,7 @@ export async function promptEditClient(
     redirectUris,
     public: isPublic,
     scopes,
+    permissions,
     resources,
     requireConsent,
     filterMode,
@@ -438,6 +472,7 @@ export async function applyClientEdit(db: Database, clientId: string, edit: Edit
     redirectUris: edit.redirectUris,
     public: edit.public,
     scopes: edit.scopes,
+    permissions: edit.permissions,
   };
 
   let secretHash = row.secretHash;

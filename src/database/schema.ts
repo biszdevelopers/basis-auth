@@ -26,6 +26,8 @@ export const users = pgTable(
     upstreamSubject: text("upstream_subject").notNull(),
     email: text("email").notNull(),
     emailVerified: boolean("email_verified").notNull().default(false),
+    studentId: text("student_id"),
+    schoolDistrict: text("school_district"),
     disabled: boolean("disabled").notNull().default(false),
     displayName: text("display_name"),
     picture: bytea("picture"),

@@ -1,6 +1,7 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
 import type { Database } from "../database/client.js";
 import { authSessions, refreshTokens, users } from "../database/schema.js";
+import { deriveBasisStudentDetails, isVerifiedBasisEmail } from "../identity.js";
 
 const allowedFields = new Set(["displayName", "email", "emailVerified", "disabled", "picture"]);
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -116,6 +117,8 @@ export function createInternalUserService(db: Database) {
         provider: users.provider,
         email: users.email,
         emailVerified: users.emailVerified,
+        studentId: users.studentId,
+        schoolDistrict: users.schoolDistrict,
         disabled: users.disabled,
         displayName: users.displayName,
         tokensValidAfter: users.tokensValidAfter,
@@ -144,9 +147,14 @@ export function createInternalUserService(db: Database) {
     const patch = parsePatch(input);
     const values: Partial<typeof users.$inferInsert> = { updatedAt: new Date() };
     if (patch.displayName !== undefined) values.displayName = patch.displayName;
-    if (patch.email !== undefined) values.email = patch.email;
-    if (patch.emailVerified !== undefined) values.emailVerified = patch.emailVerified;
-    else if (patch.email !== undefined) values.emailVerified = false;
+    if (patch.email !== undefined) {
+      values.email = patch.email;
+      const { studentId, schoolDistrict } = deriveBasisStudentDetails(patch.email);
+      values.studentId = studentId;
+      values.schoolDistrict = schoolDistrict;
+      values.emailVerified = isVerifiedBasisEmail(patch.email);
+    }
+    if (patch.emailVerified !== undefined && patch.email === undefined) values.emailVerified = patch.emailVerified;
     if (patch.disabled !== undefined) values.disabled = patch.disabled;
     if (patch.picture !== undefined) {
       values.picture = patch.picture ? Buffer.from(patch.picture.data, "base64") : null;

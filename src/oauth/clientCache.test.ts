@@ -14,8 +14,9 @@ function makeClient(clientId: string, redirectUris: string[], filterContent: str
       name: clientId,
       owners: [{ id: "owner", role: "role.ADMIN" }],
       redirectUris,
-      public: false,
-      scopes: ["openid"],
+    public: false,
+    scopes: ["openid"],
+    permissions: [],
     },
   };
 }

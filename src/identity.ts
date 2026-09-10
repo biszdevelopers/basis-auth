@@ -13,6 +13,34 @@ export interface UpstreamIdentity {
   picture?: { data: Buffer; contentType: string };
 }
 
+export interface BasisStudentDetails {
+  studentId: string | null;
+  schoolDistrict: string | null;
+}
+
+const verifiedEmailDomains = new Set(["basischina.com", "basis-global.com"]);
+
+export function isVerifiedBasisEmail(email: string): boolean {
+  const domain = email.trim().toLowerCase().match(/^[^@\s]+@([^@\s]+)$/)?.[1];
+  return Boolean(domain && verifiedEmailDomains.has(domain));
+}
+
+/**
+ * Basis student accounts use `<name><student-id>-<district>@basischina.com`.
+ * Teacher and service accounts still expose their district but have no ID.
+ */
+export function deriveBasisStudentDetails(email: string): BasisStudentDetails {
+  const normalizedEmail = email.trim().toLowerCase();
+  const localPart = normalizedEmail.match(/^([^@]+)@basischina\.com$/)?.[1];
+  if (!localPart) return { studentId: null, schoolDistrict: null };
+
+  const student = localPart.match(/^.+?(\d+)-([a-z0-9]+)$/i);
+  if (student) return { studentId: student[1]!, schoolDistrict: student[2]!.toLowerCase() };
+
+  const district = localPart.match(/^.+-([a-z0-9]+)$/i);
+  return { studentId: null, schoolDistrict: district ? district[1]!.toLowerCase() : null };
+}
+
 export function createIdentityService(
   db: Database,
   defaultPermission: string,
@@ -28,6 +56,7 @@ export function createIdentityService(
 
   async function upsertFromMicrosoft(identity: UpstreamIdentity) {
     const normalizedEmail = identity.email.trim().toLowerCase();
+    const { studentId, schoolDistrict } = deriveBasisStudentDetails(normalizedEmail);
     const [existing] = await db
       .select()
       .from(users)
@@ -50,6 +79,8 @@ export function createIdentityService(
         upstreamSubject: identity.subject,
         email: normalizedEmail,
         emailVerified: identity.emailVerified,
+        studentId,
+        schoolDistrict,
         displayName: identity.displayName,
         picture: identity.picture?.data,
         pictureContentType: identity.picture?.contentType,
@@ -60,6 +91,8 @@ export function createIdentityService(
           provider: identity.provider,
           email: normalizedEmail,
           emailVerified: identity.emailVerified,
+          studentId,
+          schoolDistrict,
           displayName: identity.displayName,
           picture: identity.picture?.data,
           pictureContentType: identity.picture?.contentType,
@@ -80,7 +113,6 @@ export function createIdentityService(
   async function findAccount(userId: string) {
     const [user] = await db.select().from(users).where(eq(users.id, userId)).limit(1);
     if (!user || user.disabled) return undefined;
-    const permissions = await permissionsFor(user.id);
     return {
       accountId: user.id,
       async claims(_use: string, scope: string) {
@@ -99,7 +131,6 @@ export function createIdentityService(
           ...(scopes.has("email")
             ? { email: user.email, email_verified: user.emailVerified }
             : {}),
-          ...(scopes.has("permissions") ? { permissions } : {}),
         };
       },
     };

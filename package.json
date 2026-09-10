@@ -29,7 +29,7 @@
     "db:migrate": "tsx src/database/migrate.ts"
   },
   "dependencies": {
-    "@basis/schema": "../basis-schema",
+    "@basis/schema": "link:@basis/schema",
     "@hono/node-server": "^2.0.12",
     "@hugeicons/core-free-icons": "^4.2.3",
     "lru-cache": "^11.0.2",

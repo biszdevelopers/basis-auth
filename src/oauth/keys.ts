@@ -10,6 +10,7 @@ import {
   SignJWT,
   type JWK,
 } from "jose";
+import { z } from "zod";
 import type { AppConfig } from "../config.js";
 import type { IdentityService } from "../identity.js";
 
@@ -18,7 +19,7 @@ const basisAuthAccessTokenClaimsSchema = accessTokenClaimsSchema
   .omit({ aud: true, permissions: true })
   .extend({
     aud: accessTokenClaimsSchema.shape.aud.optional(),
-    permissions: accessTokenClaimsSchema.shape.permissions.optional(),
+    permissions: z.array(z.string()),
   });
 
 function toPublicJwk(jwk: JWK): JWK {
@@ -29,7 +30,8 @@ export type AccessTokenClaims = Pick<
   SchemaAccessTokenClaims,
   "sub" | "client_id" | "scope" | "jti" | "iat" | "exp" | "iss"
 > &
-  Partial<Pick<SchemaAccessTokenClaims, "aud" | "permissions">>;
+  Pick<SchemaAccessTokenClaims, "permissions"> &
+  Partial<Pick<SchemaAccessTokenClaims, "aud">>;
 
 type UserState = { id: string; disabled: boolean; tokensValidAfter: Date | null };
 type Account = Awaited<ReturnType<IdentityService["findAccount"]>>;
@@ -55,16 +57,13 @@ export async function createKeyService(config: AppConfig, identity: IdentityServ
   ) {
     const user = preloaded?.user ?? (await identity.findUser(input.userId));
     if (!user || user.disabled) throw new Error("Cannot issue an access token for a missing or disabled user");
-    const includePermissions = input.scopes.includes("permissions");
-    const permissions = includePermissions
-      ? [...new DelegatedPermissionSet(
-          preloaded?.permissions ?? (await identity.permissionsFor(input.userId)),
-        ).permissions]
-      : [];
+    const permissions = [...new DelegatedPermissionSet(
+      preloaded?.permissions ?? (await identity.permissionsFor(input.userId)),
+    ).permissions];
     const token = new SignJWT({
       client_id: input.clientId,
       scope: input.scopes.join(" "),
-      ...(includePermissions ? { permissions } : {}),
+      permissions,
     })
       .setProtectedHeader({ alg: "RS256", kid: activeJwk.kid, typ: "at+jwt" })
       .setIssuer(config.issuer)

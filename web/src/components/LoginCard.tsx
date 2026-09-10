@@ -203,9 +203,6 @@ export function LoginCard({
                                     <div className="flex flex-col gap-1 mt-3">
                                         <Label><a href="https://basischina.com" target="_blank" className="text-primary">basischina.com</a></Label>
                                         <Label><a href="https://basis-global.com" target="_blank" className="text-primary">basis-global.com</a></Label>
-                                        <Label><a href="https://basisinternational-sz.com" target="_blank" className="text-primary">basisinternational-sz.net</a></Label>
-                                        <Label><a href="https://basisinternationalnj.com" target="_blank" className="text-primary">basisinternationalnj.com</a></Label>
-                                        <Label><a href="https://basisinternationalsz.com" target="_blank" className="text-primary">basisinternationalsz.com</a></Label>
                                     </div>
                                 </HoverCardContent>
                             </HoverCard>

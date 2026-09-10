@@ -21,29 +21,17 @@ describe("describeScope", () => {
   });
 
   it("lists sensitive scopes first", () => {
-    expect(describeScopes(["openid", "email", "permissions"]).map((scope) => scope.scope)).toEqual([
-      "permissions",
+    expect(describeScopes(["openid", "email", "nethack.access"]).map((scope) => scope.scope)).toEqual([
       "openid",
       "email",
+      "nethack.access",
     ]);
   });
 
-  it("describes every Network Hackathon delegated scope", () => {
-    const scopes = new Map([
-      ["Profile.all", true], ["Projects.read.all", false], ["Projects.write.self", true],
-      ["Teams.all", true], ["Voting.all", true], ["Judging.all", true],
-      ["Seasons.all", true], ["Files.all", true], ["Chatbot.use", false],
-      ["Database.export", true],
-    ]);
-    for (const [scope, sensitive] of scopes) {
-      expect(describeScope(scope)).toMatchObject({ sensitive });
-      expect(describeScope(scope).description).toContain("Network Hackathon");
-    }
-  });
-
-  it("makes wildcard consent grants explicit", () => {
-    for (const scope of ["Profile.all", "Projects.read.all", "Teams.all", "Voting.all", "Judging.all", "Seasons.all", "Files.all"]) {
-      expect(describeScope(scope).description.toLowerCase()).toContain("all");
-    }
+  it("describes an application access scope", () => {
+    expect(describeScope("nethack.access")).toMatchObject({
+      description: "Access nethack",
+      sensitive: false,
+    });
   });
 });

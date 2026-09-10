@@ -15,7 +15,7 @@ const base = {
       clientId: "test-client",
       clientSecret: "a-sufficiently-long-secret",
       redirectUris: ["https://client.example.test/callback"],
-      scopes: ["openid", "records.read"],
+      scopes: ["records.read"],
       resources: ["urn:basis:api:test"],
     },
   ]),
@@ -27,6 +27,66 @@ describe("configuration", () => {
     expect(config.issuer).toBe("https://auth.example.test");
     expect(config.clients[0]?.clientId).toBe("test-client");
     expect(config.jwks.keys[0]?.d).toBeTypeOf("string");
+  });
+
+  it("does not add public OIDC scopes to a client allowlist", async () => {
+    const config = await loadConfig({
+      ...base,
+      OIDC_CLIENTS_JSON: JSON.stringify([
+        {
+          clientId: "identity-client",
+          clientSecret: "a-sufficiently-long-secret",
+          redirectUris: ["https://client.example.test/callback"],
+          resources: ["urn:basis:api:test"],
+        },
+      ]),
+    });
+
+    expect(config.clients[0]?.scopes).toEqual([]);
+  });
+
+  it("accepts descriptive, namespaced permission definitions", async () => {
+    const config = await loadConfig({
+      ...base,
+      OIDC_CLIENTS_JSON: JSON.stringify([{
+        clientId: "nethack",
+        clientSecret: "a-sufficiently-long-secret",
+        redirectUris: ["https://client.example.test/callback"],
+        scopes: ["records.read"],
+        permissions: [{ key: "nethack.Projects.read.all", description: "View all projects" }],
+        resources: ["urn:basis:api:test"],
+      }]),
+    });
+    expect(config.clients[0]?.permissions).toEqual([
+      { key: "nethack.Projects.read.all", description: "View all projects" },
+    ]);
+  });
+
+  it("rejects duplicate permission-definition keys and scopes absent from the resource", async () => {
+    await expect(loadConfig({
+      ...base,
+      OIDC_CLIENTS_JSON: JSON.stringify([{
+        clientId: "nethack",
+        clientSecret: "a-sufficiently-long-secret",
+        redirectUris: ["https://client.example.test/callback"],
+        scopes: ["nethack.access"],
+        permissions: [
+          { key: "nethack.Projects.read", description: "Read projects" },
+          { key: "NETHACK.projects.READ", description: "Duplicate" },
+        ],
+        resources: ["urn:basis:api:test"],
+      }]),
+    })).rejects.toThrow("unique");
+    await expect(loadConfig({
+      ...base,
+      OIDC_CLIENTS_JSON: JSON.stringify([{
+        clientId: "nethack",
+        clientSecret: "a-sufficiently-long-secret",
+        redirectUris: ["https://client.example.test/callback"],
+        scopes: ["nethack.access"],
+        resources: ["urn:basis:api:test"],
+      }]),
+    })).rejects.toThrow("not registered by its resource");
   });
 
   it("rejects clients referencing an unknown resource", async () => {

@@ -1,24 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { resolveEmailVerified } from "./microsoft.js";
+import { isVerifiedBasisEmail } from "./identity.js";
 
-describe("resolveEmailVerified", () => {
-  it("trusts an explicit email_verified flag from the userinfo response", () => {
-    expect(resolveEmailVerified({ email_verified: true }, {})).toBe(true);
+describe("isVerifiedBasisEmail", () => {
+  it("verifies a Basis China email", () => {
+    expect(isVerifiedBasisEmail("student71984-bisz@basischina.com")).toBe(true);
   });
 
-  it("trusts the email_verified flag carried in the id_token claims", () => {
-    expect(resolveEmailVerified({}, { email_verified: true })).toBe(true);
+  it("verifies a Basis Global email", () => {
+    expect(isVerifiedBasisEmail("person@basis-global.com")).toBe(true);
   });
 
-  it("treats an explicit false flag as unverified", () => {
-    expect(resolveEmailVerified({ email_verified: false }, {})).toBe(false);
-  });
-
-  it("does not invent verification when no flag is present", () => {
-    expect(resolveEmailVerified({ mail: "user@example.test" }, { email: "user@example.test" })).toBe(false);
-  });
-
-  it("treats an absent userInfo as unverified", () => {
-    expect(resolveEmailVerified(undefined, {})).toBe(false);
+  it("leaves every other email unverified", () => {
+    expect(isVerifiedBasisEmail("person@example.test")).toBe(false);
+    expect(isVerifiedBasisEmail("person@basisinternational-sz.com")).toBe(false);
   });
 });

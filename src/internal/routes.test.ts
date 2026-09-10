@@ -8,6 +8,8 @@ const user = {
   provider: "microsoft",
   email: "person@example.test",
   emailVerified: true,
+  studentId: null,
+  schoolDistrict: null,
   disabled: false,
   displayName: "Person",
   tokensValidAfter: null,

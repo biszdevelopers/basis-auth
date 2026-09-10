@@ -59,9 +59,9 @@ Production must set `NODE_ENV=production`, an HTTPS `OIDC_ISSUER`, persistent pr
 
 ## Client and resource registration
 
-`OIDC_RESOURCES_JSON` declares API audiences and the scopes each API accepts. `OIDC_CLIENTS_JSON` declares which resources and scopes each application may request.
+`OIDC_RESOURCES_JSON` declares API audiences and the scopes each API accepts. Each client owns exactly one dedicated resource, and `OIDC_CLIENTS_JSON` declares the resource-owned scopes that application may request. The standard `openid`, `profile`, `email`, and `offline_access` scopes are public to every registered client and do not need to be listed in either configuration.
 
-For basishacks, register the resource audience `devconnect://nethack.bisz.dev`. The confidential client and resource must allow this exact delegated union: `Profile.all Projects.read.all Projects.write.self Teams.all Voting.all Judging.all Seasons.all Files.all Chatbot.use Database.export`; the client also requests `openid profile email offline_access`. `.all` is the only hierarchy wildcard and grants concrete descendant scopes through the shared `@basis/schema` matcher. `.*` is not supported. The complete JSON examples are in `.env.example`.
+For basishacks, register the dedicated resource audience `devconnect://nethack.bisz.dev` and the application scope `nethack.access`; the client explicitly requests it with `openid profile email offline_access`. Client registrations also initialize descriptive global permission definitions such as `nethack.Projects.read.all`. User grants are stored globally, not per client, and every access token contains them in its `permissions` array. Definitions are a catalog for future administration and display; they do not filter existing grants. The complete JSON example is in `.env.example`.
 
 Confidential BFF clients use `client_secret_basic`; PostgreSQL stores only a scrypt hash of the configured secret. Public clients use `token_endpoint_auth_method=none`. Every authorization request from either client type must include a fresh RFC 7636 verifier-derived `code_challenge` and `code_challenge_method=S256`. The token request must include the matching `code_verifier`; `nonce` remains an additional OIDC replay binding and is not a substitute for PKCE.
 
@@ -72,7 +72,7 @@ A typical authorization request is:
   client_id=basis-portal&
   response_type=code&
   redirect_uri=https%3A%2F%2Fportal.example.org%2Foauth%2Fcallback&
-  scope=openid%20profile%20email%20permissions%20offline_access%20projects.read&
+  scope=openid%20profile%20email%20offline_access%20nethack.access&
   resource=urn%3Abasis%3Aapi%3Aprojects&
   state=...&nonce=...&
   code_challenge=...&code_challenge_method=S256
@@ -90,7 +90,7 @@ bun run clients:add      # add-client walkthrough
 bun run clients:remove   # pick a client from a numbered list
 ```
 
-Adding walks through name, type (confidential/public), redirect URIs, resources (picked from the registered list), scopes, consent, and optional account filters. For confidential clients, leave the secret blank to auto-generate a `sk-...` secret; it is printed once (PostgreSQL stores only a scrypt hash, so copy it then). Editing keeps the existing secret and owners unless you rotate or change the client type; a rotated secret is likewise shown once. Passing a JSON definition without `clientId` still works non-interactively and also auto-generates a missing secret:
+Adding walks through name, type (confidential/public), redirect URIs, one dedicated resource, scopes, JSON permission definitions, consent, and optional account filters. For confidential clients, leave the secret blank to auto-generate a `sk-...` secret; it is printed once (PostgreSQL stores only a scrypt hash, so copy it then). Editing keeps the existing secret and owners unless you rotate or change the client type; a rotated secret is likewise shown once. Passing a JSON definition without `clientId` still works non-interactively and also auto-generates a missing secret:
 
 ```bash
 bun run clients:add -- '{"name":"Example","redirectUris":["https://example.test/callback"],"public":false,"resources":["urn:basis:api:example"]}'
@@ -123,7 +123,7 @@ ID tokens authenticate the client login. They must never be accepted by resource
 - downloads and caches `/oauth/jwks`;
 - allows only RS256 and `typ=at+jwt`;
 - validates exact issuer, audience, and token lifetime;
-- exposes `requireScopes()` and `requirePermissions()` helpers.
+- exposes `requireScopes()` and `requirePermissions()` helpers; `permissions` is always a string array in a valid access token.
 
 Other platforms should implement the same contract with their standard OAuth resource-server library. APIs that only verify JWTs locally observe user disablement and permission changes when existing access tokens expire, within ten minutes.
 

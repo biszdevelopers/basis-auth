@@ -13,6 +13,18 @@ const metadata = {
 };
 
 describe("stored client metadata", () => {
+  it("retains descriptive permission definitions", () => {
+    const parsed = oauthServiceInternals.parseMetadata({
+      ...metadata,
+      owners: [{ id: "c6ba1588-03bb-4c61-a4e1-3c7c82e919b5", role: "role.ADMIN" }],
+      permissions: [{ key: "nethack.Projects.submit", description: "Submit a project" }],
+    });
+
+    expect(parsed.permissions).toEqual([
+      { key: "nethack.Projects.submit", description: "Submit a project" },
+    ]);
+  });
+
   it.each([
     ["RoLe.AdMiN", "role.ADMIN"],
     ["ROLE.GENERAL", "role.GENERAL"],
@@ -144,5 +156,47 @@ describe("authorization resource check", () => {
         codeChallengeMethod: "S256",
       }),
     ).rejects.toThrow('Resource server "urn:basis:api:missing" is not registered');
+  });
+
+  it("allows public OIDC scopes without adding them to the client or resource", async () => {
+    const publicScopeClient = {
+      ...clientRow,
+      resources: ["urn:basis:api:test"],
+      metadata: { ...clientRow.metadata, scopes: [] },
+    };
+    const clientExecute = vi.fn(async () => [publicScopeClient]);
+    const dbWithPublicScopes = {
+      select: () => ({
+        from: (table: unknown) => ({
+          where: () => ({
+            limit: () => table === resourceServers
+              ? [{ audience: "urn:basis:api:test", scopes: [] }]
+              : { prepare: () => ({ execute: clientExecute }) },
+          }),
+        }),
+      }),
+      insert: () => ({ values: vi.fn(async () => undefined) }),
+    } as unknown as Parameters<typeof createOAuthService>[1];
+    const publicScopeService = createOAuthService(
+      config,
+      dbWithPublicScopes,
+      {} as KeyService,
+      {} as IdentityService,
+    );
+
+    await expect(
+      publicScopeService.startAuthorization({
+        initialUri: "/oauth/authorize?client_id=client-1",
+        clientId: "client-1",
+        redirectUri: "https://portal.example.test/callback",
+        responseType: "code",
+        scope: "openid profile email offline_access",
+        resources: ["urn:basis:api:test"],
+        state: "state",
+        nonce: "nonce",
+        codeChallenge: "a".repeat(43),
+        codeChallengeMethod: "S256",
+      }),
+    ).resolves.toMatchObject({ interactionToken: expect.any(String) });
   });
 });

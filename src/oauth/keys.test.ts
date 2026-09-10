@@ -145,7 +145,7 @@ describe("access-token user state", () => {
     await expect(keys.verifyAccessToken(token)).resolves.toMatchObject({ sub: USER_ID });
   });
 
-  it("includes the permissions claim only when the scope was granted", async () => {
+  it("always includes the permissions claim, even without an OAuth permissions scope", async () => {
     const config = buildConfig();
     const jwk = await rsaJwk();
     (config.jwks as { keys: unknown[] }).keys = [jwk];
@@ -161,7 +161,7 @@ describe("access-token user state", () => {
       scopes: ["openid"],
       resource: "urn:basis:api:test",
     });
-    expect(decodeJwt(without).permissions).toBeUndefined();
+    expect(decodeJwt(without).permissions).toEqual(["participant"]);
 
     const withScope = await keys.issueAccessToken({
       userId: USER_ID,
@@ -185,7 +185,7 @@ describe("access-token user state", () => {
     const keys = await createKeyService(config, identity);
 
     await keys.issueAccessToken(
-      { userId: USER_ID, clientId: "client", scopes: ["openid", "permissions"], resource: "urn:basis:api:test" },
+      { userId: USER_ID, clientId: "client", scopes: ["openid"], resource: "urn:basis:api:test" },
       { user: { id: USER_ID, disabled: false, tokensValidAfter: null }, permissions: ["participant"] },
     );
 
@@ -379,7 +379,7 @@ describe("key service — doubled battery", () => {
       permissionsFor: async () => ["participant", "admin"],
     } as unknown as IdentityService;
     const keys = await createKeyService(config, identity);
-    const token = await keys.issueAccessToken({ userId: USER_ID, clientId: "c", scopes: ["openid", "permissions"], resource: "urn:basis:api:test" });
+    const token = await keys.issueAccessToken({ userId: USER_ID, clientId: "c", scopes: ["openid"], resource: "urn:basis:api:test" });
     expect(decodeJwt(token).permissions).toEqual(["participant", "admin"]);
   });
 
@@ -396,7 +396,7 @@ describe("key service — doubled battery", () => {
     const token = await keys.issueAccessToken({
       userId: USER_ID,
       clientId: "c",
-      scopes: ["openid", "permissions"],
+      scopes: ["openid"],
       resource: "urn:basis:api:test",
     });
 

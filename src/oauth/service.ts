@@ -1,5 +1,5 @@
 import { and, eq, gt, isNull, sql } from "drizzle-orm";
-import type { AppConfig } from "../config.js";
+import { permissionDefinitionsSchema, type AppConfig } from "../config.js";
 import type { Database } from "../database/client.js";
 import {
   secretMatches,
@@ -26,7 +26,11 @@ import { scopesCover } from "./scopes.js";
 //   return x.substring(0, 20) + (x.length > 20 ? "..." : "")
 // }
 
-const identityScopes = new Set(["openid", "profile", "email", "permissions", "offline_access"]);
+// These OIDC scopes describe the authenticated user or request refresh-token
+// access. They are available to every registered client, rather than being an
+// API capability granted by a particular resource server.
+const publicScopes = new Set(["openid", "profile", "email", "offline_access"]);
+const identityScopes = publicScopes;
 
 export interface OAuthClient {
   clientId: string;
@@ -39,6 +43,9 @@ export interface OAuthClient {
 }
 
 function parseMetadata(value: Record<string, unknown>): StoredClientMetadata {
+  const permissions = value.permissions === undefined
+    ? []
+    : permissionDefinitionsSchema.parse(value.permissions);
   const owners = Array.isArray(value.owners)
     ? value.owners.map((owner): ClientOwner | undefined => {
         if (!owner || typeof owner !== "object" || !("id" in owner) || !("role" in owner)) {
@@ -61,7 +68,13 @@ function parseMetadata(value: Record<string, unknown>): StoredClientMetadata {
   ) {
     throw new Error("Stored client metadata is invalid");
   }
-  return { ...value, owners: owners as ClientOwner[] } as StoredClientMetadata;
+  return {
+    ...value,
+    owners: owners as ClientOwner[],
+    // Existing database rows predate permission definitions. They remain
+    // usable until their next seed or TUI edit writes an explicit empty list.
+    permissions,
+  } as StoredClientMetadata;
 }
 
 export function createOAuthService(
@@ -129,7 +142,8 @@ export function createOAuthService(
     if (!scopes.includes("openid")) {
       throw new OAuthError("invalid_scope", "The openid scope is required");
     }
-    if (!scopesCover(client.metadata.scopes, scopes)) {
+    const resourceScopes = scopes.filter((scope) => !publicScopes.has(scope));
+    if (!scopesCover(client.metadata.scopes, resourceScopes)) {
       throw new OAuthError("invalid_scope", "The client is not allowed to request one or more scopes", 400, 14401);
     }
     if (input.resources.length > 1) {

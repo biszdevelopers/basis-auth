@@ -2,14 +2,41 @@ import { readFile } from "node:fs/promises";
 import { generateKeyPair, exportJWK, type JWK } from "jose";
 import { z } from "zod";
 
+export const permissionDefinitionSchema = z.object({
+  key: z.string().trim().min(1),
+  description: z.string().trim().min(1),
+});
+
+export const permissionDefinitionsSchema = z
+  .array(permissionDefinitionSchema)
+  .superRefine((definitions, context) => {
+    const seen = new Set<string>();
+    for (const [index, definition] of definitions.entries()) {
+      const normalized = definition.key.toLocaleLowerCase("en-US");
+      if (seen.has(normalized)) {
+        context.addIssue({
+          code: "custom",
+          path: [index, "key"],
+          message: "Permission keys must be unique (case-insensitively)",
+        });
+      }
+      seen.add(normalized);
+    }
+  });
+
 export const clientSchema = z.object({
   clientId: z.string().min(1),
   name: z.string().min(1).optional(),
   clientSecret: z.string().min(16).optional(),
   redirectUris: z.array(z.url()).min(1),
   public: z.boolean().default(false),
-  scopes: z.array(z.string().min(1)).default(["openid", "profile", "email"]),
-  resources: z.array(z.string().min(1)).min(1),
+  // OIDC identity and refresh-token scopes are public. This list controls
+  // only resource-owned scopes.
+  scopes: z.array(z.string().min(1)).default([]),
+  // Definitions describe globally named user permissions issued to this app.
+  // They deliberately do not constrain grants already stored for a user.
+  permissions: permissionDefinitionsSchema.default([]),
+  resources: z.array(z.string().min(1)).length(1, "Each client must use one dedicated resource"),
   requireConsent: z.boolean().default(true),
   filterMode: z.enum(["whitelist", "blacklist"]).nullable().default(null),
   filterContent: z.array(z.string().min(1).transform((value) => value.trim().toLowerCase())).default([]),
@@ -17,7 +44,7 @@ export const clientSchema = z.object({
 
 export const clientInputSchema = clientSchema.omit({ clientId: true });
 
-const resourceSchema = z.object({
+export const resourceSchema = z.object({
   audience: z.string().min(1),
   scopes: z.array(z.string().min(1)).default([]),
 });
@@ -54,6 +81,7 @@ const environmentSchema = z.object({
 
 export type ClientSeed = z.infer<typeof clientSchema>;
 export type ResourceSeed = z.infer<typeof resourceSchema>;
+export type PermissionDefinition = z.infer<typeof permissionDefinitionSchema>;
 export type BootstrapPermissionGrant = z.infer<typeof bootstrapGrantSchema>;
 
 export interface AppConfig {
@@ -161,10 +189,17 @@ export async function loadConfig(source: NodeJS.ProcessEnv = process.env): Promi
   );
   const knownResources = new Set(resources.map((resource) => resource.audience));
   for (const configuredClient of clients) {
+    if (configuredClient.resources.length !== 1) {
+      throw new Error(`Client ${configuredClient.clientId} must declare exactly one dedicated resource`);
+    }
     for (const resource of configuredClient.resources) {
       if (!knownResources.has(resource)) {
         throw new Error(`Client ${configuredClient.clientId} references unknown resource ${resource}`);
       }
+    }
+    const resource = resources.find((candidate) => candidate.audience === configuredClient.resources[0]);
+    if (!resource || configuredClient.scopes.some((scope) => !resource.scopes.includes(scope))) {
+      throw new Error(`Client ${configuredClient.clientId} declares scopes not registered by its resource`);
     }
   }
 

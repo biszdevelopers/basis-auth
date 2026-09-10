@@ -131,8 +131,8 @@ export function createApp(
     subject_types_supported: ["public"],
     id_token_signing_alg_values_supported: ["RS256"],
     token_endpoint_auth_methods_supported: ["client_secret_basic", "none"],
-    scopes_supported: ["openid", "profile", "email", "permissions", "offline_access"],
-    claims_supported: ["sub", "name", "picture", "email", "email_verified", "permissions"],
+    scopes_supported: ["openid", "profile", "email", "offline_access"],
+    claims_supported: ["sub", "name", "picture", "email", "email_verified"],
     code_challenge_methods_supported: ["S256"],
   };
   const oauthAuthorizationServerConfiguration = {
@@ -411,6 +411,7 @@ export function createApp(
     } else {
       throw new OAuthError("unsupported_grant_type", "Unsupported grant_type");
     }
+    console.log(response)
     return c.json(response);
   });
 

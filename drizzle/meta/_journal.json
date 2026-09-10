@@ -64,6 +64,13 @@
       "when": 1787904954557,
       "tag": "0008_idle_session",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1789050635745,
+      "tag": "0009_chief_gorilla_man",
+      "breakpoints": true
     }
   ]
 }
