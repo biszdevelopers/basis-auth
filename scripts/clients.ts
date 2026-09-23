@@ -5,9 +5,9 @@ import { createInterface, type Interface } from "node:readline/promises";
 import { eq } from "drizzle-orm";
 import {
   clientInputSchema,
-  permissionDefinitionSchema,
+  permissionDefinitionsSchema,
   type ClientSeed,
-  type PermissionDefinition,
+  type PermissionDefinitions,
 } from "../src/config.js";
 import { createDatabase, type Database } from "../src/database/client.js";
 import {
@@ -46,12 +46,12 @@ function requireTty(): void {
   }
 }
 
-function parsePermissionDefinitions(value: string): PermissionDefinition[] {
-  if (!value) return [];
+function parsePermissionDefinitions(value: string): PermissionDefinitions {
+  if (!value) return {};
   try {
-    return permissionDefinitionSchema.array().parse(JSON.parse(value));
+    return permissionDefinitionsSchema.parse(JSON.parse(value));
   } catch {
-    throw new Error('Permission definitions must be a JSON array of {"key","description"} objects');
+    throw new Error('Permission definitions must be a JSON object mapping permission names to descriptions');
   }
 }
 
@@ -86,7 +86,7 @@ export async function listClients(db: Database): Promise<ListedClient[]> {
         public: metadata.public ?? row.secretHash === null,
         redirectUris: metadata.redirectUris ?? [],
         resources: row.resources ?? [],
-        permissionDefinitionCount: metadata.permissions?.length ?? 0,
+        permissionDefinitionCount: Object.keys(metadata.permissions ?? {}).length,
       };
     })
     .sort((a, b) => a.name.localeCompare(b.name));
@@ -221,7 +221,7 @@ function printClientSummary(input: {
   redirectUris: string[];
   resources: string[];
   scopes: string[];
-  permissions: PermissionDefinition[];
+  permissions: PermissionDefinitions;
   requireConsent: boolean;
   filterMode: "whitelist" | "blacklist" | null;
   filterContent: string[];
@@ -230,7 +230,7 @@ function printClientSummary(input: {
     `\nName: ${input.name ?? "(none)"}\nType: ${input.public ? "public" : "confidential"}\n` +
       `Redirects: ${input.redirectUris.join(", ")}\nResources: ${input.resources.join(", ")}\n` +
       `Scopes: ${input.scopes.join(", ")}\nConsent: ${input.requireConsent ? "shown" : "skipped"}\n` +
-      `Permission definitions: ${input.permissions.length}\n` +
+      `Permission definitions: ${Object.keys(input.permissions).length}\n` +
       `Filter: ${input.filterMode ?? "none"}${input.filterContent.length ? ` (${input.filterContent.join(", ")})` : ""}\n`,
   );
 }
@@ -259,7 +259,7 @@ export async function promptNewClient(rl: Interface, audiences: string[]): Promi
 
   const scopes = splitList(await ask(rl, "Resource scopes (comma-separated)", ""));
   const permissions = parsePermissionDefinitions(
-    await ask(rl, 'Permission definitions (JSON array of {"key","description"})', "[]"),
+    await ask(rl, "Permission definitions (JSON object mapping permission names to descriptions)", "{}"),
   );
   const requireConsent = await askYesNo(rl, "Show consent screen?", true);
   const filterMode = await promptFilterMode(rl, "");
@@ -359,7 +359,7 @@ export interface ClientDetail {
   hasSecret: boolean;
   redirectUris: string[];
   scopes: string[];
-  permissions: PermissionDefinition[];
+  permissions: PermissionDefinitions;
   resources: string[];
   requireConsent: boolean;
   filterMode: "whitelist" | "blacklist" | null;
@@ -378,7 +378,7 @@ export async function getClientDetail(db: Database, clientId: string): Promise<C
     hasSecret: row.secretHash !== null,
     redirectUris: metadata.redirectUris ?? [],
     scopes: metadata.scopes ?? [],
-    permissions: metadata.permissions ?? [],
+    permissions: metadata.permissions ?? {},
     resources: row.resources ?? [],
     requireConsent: row.requireConsent,
     filterMode: row.filterMode ?? null,
@@ -393,7 +393,7 @@ export interface EditedClient {
   newSecret: string | null | undefined;
   redirectUris: string[];
   scopes: string[];
-  permissions: PermissionDefinition[];
+  permissions: PermissionDefinitions;
   resources: string[];
   requireConsent: boolean;
   filterMode: "whitelist" | "blacklist" | null;
@@ -432,7 +432,7 @@ export async function promptEditClient(
   const permissions = parsePermissionDefinitions(
     await ask(
       rl,
-      'Permission definitions (JSON array of {"key","description"})',
+      "Permission definitions (JSON object mapping permission names to descriptions)",
       JSON.stringify(current.permissions),
     ),
   );

@@ -1,7 +1,7 @@
 import { promisify } from "node:util";
 import { randomBytes, scrypt as scryptCallback, timingSafeEqual } from "node:crypto";
 import { eq } from "drizzle-orm";
-import type { ClientSeed, PermissionDefinition, ResourceSeed } from "../config.js";
+import type { ClientSeed, PermissionDefinitions, ResourceSeed } from "../config.js";
 import type { Database } from "./client.js";
 import { oidcClients, resourceServers } from "./schema.js";
 
@@ -34,7 +34,7 @@ export interface StoredClientMetadata extends Record<string, unknown> {
   redirectUris: string[];
   public: boolean;
   scopes: string[];
-  permissions: PermissionDefinition[];
+  permissions: PermissionDefinitions;
 }
 
 export async function seedConfiguration(

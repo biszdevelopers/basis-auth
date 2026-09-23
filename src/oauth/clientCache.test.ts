@@ -16,7 +16,7 @@ function makeClient(clientId: string, redirectUris: string[], filterContent: str
       redirectUris,
     public: false,
     scopes: ["openid"],
-    permissions: [],
+    permissions: {},
     },
   };
 }

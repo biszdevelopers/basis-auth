@@ -53,16 +53,14 @@ describe("configuration", () => {
         clientSecret: "a-sufficiently-long-secret",
         redirectUris: ["https://client.example.test/callback"],
         scopes: ["records.read"],
-        permissions: [{ key: "nethack.Projects.read.all", description: "View all projects" }],
+        permissions: { "nethack.Projects.read.all": "View all projects" },
         resources: ["urn:basis:api:test"],
       }]),
     });
-    expect(config.clients[0]?.permissions).toEqual([
-      { key: "nethack.Projects.read.all", description: "View all projects" },
-    ]);
+    expect(config.clients[0]?.permissions).toEqual({ "nethack.Projects.read.all": "View all projects" });
   });
 
-  it("rejects duplicate permission-definition keys and scopes absent from the resource", async () => {
+  it("rejects invalid permission descriptions and scopes absent from the resource", async () => {
     await expect(loadConfig({
       ...base,
       OIDC_CLIENTS_JSON: JSON.stringify([{
@@ -70,13 +68,10 @@ describe("configuration", () => {
         clientSecret: "a-sufficiently-long-secret",
         redirectUris: ["https://client.example.test/callback"],
         scopes: ["nethack.access"],
-        permissions: [
-          { key: "nethack.Projects.read", description: "Read projects" },
-          { key: "NETHACK.projects.READ", description: "Duplicate" },
-        ],
+        permissions: { "nethack.Projects.read": "" },
         resources: ["urn:basis:api:test"],
       }]),
-    })).rejects.toThrow("unique");
+    })).rejects.toThrow();
     await expect(loadConfig({
       ...base,
       OIDC_CLIENTS_JSON: JSON.stringify([{

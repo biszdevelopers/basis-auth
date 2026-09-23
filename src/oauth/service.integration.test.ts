@@ -37,7 +37,7 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
           redirectUris: ["https://portal.example.test/callback"],
           public: false,
           scopes: ["nethack.access"],
-          permissions: [{ key: "nethack.Projects.read.all", description: "View all projects" }],
+          permissions: { "nethack.Projects.read.all": "View all projects" },
           resources: ["urn:basis:api:projects"],
           requireConsent: false,
         },
@@ -67,7 +67,7 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
           role: "role.ADMIN",
         },
       ],
-      permissions: [{ key: "nethack.Projects.read.all", description: "View all projects" }],
+      permissions: { "nethack.Projects.read.all": "View all projects" },
     });
   });
 

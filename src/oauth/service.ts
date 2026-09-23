@@ -44,7 +44,7 @@ export interface OAuthClient {
 
 function parseMetadata(value: Record<string, unknown>): StoredClientMetadata {
   const permissions = value.permissions === undefined
-    ? []
+    ? {}
     : permissionDefinitionsSchema.parse(value.permissions);
   const owners = Array.isArray(value.owners)
     ? value.owners.map((owner): ClientOwner | undefined => {

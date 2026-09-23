@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { renderErrorPage } from "@basis/schema/error-page";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { Hono, type Context, type MiddlewareHandler } from "hono";
@@ -91,7 +92,7 @@ export function createApp(
           status: 500,
           error: "server_error",
           code: 50040,
-          error_description: "The request could not be completed",
+          error_description: "The request could not be completed: " + error,
         };
   const originalAuthorizationUri = async (c: Context) => {
     try {
@@ -104,6 +105,7 @@ export function createApp(
     }
   };
   const frontendFlowError = async (c: Context, error: any) => {
+    console.error(error)
     const redirectTo = await originalAuthorizationUri(c);
     setCookie(c, ERROR_COOKIE, btoa(JSON.stringify(errorPayload(error))), {
       ...cookieOptions,
@@ -173,7 +175,7 @@ export function createApp(
 
   app.get("/", async (c) => {
     //return c.redirect("/.well-known/openid-configuration");
-    return c.body(null, 400)
+    return c.html(renderErrorPage(null));
   });
 
   async function currentSession(c: Context) {
@@ -288,6 +290,7 @@ export function createApp(
         session: sso ? { userId: sso.userId, authenticatedAt: sso.authenticatedAt } : undefined,
       });
     } catch (error) {
+      console.error(error)
       setCookie(c, ERROR_COOKIE, btoa(JSON.stringify(errorPayload(error))), {
         ...cookieOptions,
         httpOnly: false,
@@ -456,6 +459,17 @@ export function createApp(
   }
   const serveIndex = async (c: Context) => c.html(await readFile("./web/dist/index.html", "utf8"));
   app.notFound(async (c) => {
+    if (acceptsHtml(c)) {
+      return c.html(
+        renderErrorPage({
+          status: 404,
+          code: 404,
+          error: "not_found",
+          error_description: "The requested resource does not exist",
+        }),
+        404,
+      );
+    }
     return c.json({ error: "not_found", error_description: "The requested resource does not exist" }, 404);
   });
 
@@ -466,10 +480,14 @@ export function createApp(
     }
     const accept = c.req.header("accept") ?? "";
     if (accept.includes("text/html")) {
-      c.status(500);
       return c.html(
-        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Something went wrong</title></head>" +
-          "<body><h1>Something went wrong</h1><p>The request could not be completed.</p></body></html>",
+        renderErrorPage({
+          status: 500,
+          code: 500,
+          error: "server_error",
+          error_description: "The request could not be completed",
+        }),
+        500,
       );
     }
     return c.json({ error: "server_error", error_description: "The request could not be completed" }, 500);

@@ -2,21 +2,16 @@ import { readFile } from "node:fs/promises";
 import { generateKeyPair, exportJWK, type JWK } from "jose";
 import { z } from "zod";
 
-export const permissionDefinitionSchema = z.object({
-  key: z.string().trim().min(1),
-  description: z.string().trim().min(1),
-});
-
 export const permissionDefinitionsSchema = z
-  .array(permissionDefinitionSchema)
+  .record(z.string().trim().min(1), z.string().trim().min(1))
   .superRefine((definitions, context) => {
     const seen = new Set<string>();
-    for (const [index, definition] of definitions.entries()) {
-      const normalized = definition.key.toLocaleLowerCase("en-US");
+    for (const key of Object.keys(definitions)) {
+      const normalized = key.toLocaleLowerCase("en-US");
       if (seen.has(normalized)) {
         context.addIssue({
           code: "custom",
-          path: [index, "key"],
+          path: [key],
           message: "Permission keys must be unique (case-insensitively)",
         });
       }
@@ -35,7 +30,7 @@ export const clientSchema = z.object({
   scopes: z.array(z.string().min(1)).default([]),
   // Definitions describe globally named user permissions issued to this app.
   // They deliberately do not constrain grants already stored for a user.
-  permissions: permissionDefinitionsSchema.default([]),
+  permissions: permissionDefinitionsSchema.default({}),
   resources: z.array(z.string().min(1)).length(1, "Each client must use one dedicated resource"),
   requireConsent: z.boolean().default(true),
   filterMode: z.enum(["whitelist", "blacklist"]).nullable().default(null),
@@ -81,7 +76,7 @@ const environmentSchema = z.object({
 
 export type ClientSeed = z.infer<typeof clientSchema>;
 export type ResourceSeed = z.infer<typeof resourceSchema>;
-export type PermissionDefinition = z.infer<typeof permissionDefinitionSchema>;
+export type PermissionDefinitions = z.infer<typeof permissionDefinitionsSchema>;
 export type BootstrapPermissionGrant = z.infer<typeof bootstrapGrantSchema>;
 
 export interface AppConfig {

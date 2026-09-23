@@ -51,6 +51,16 @@ describe("protocol metadata", () => {
   });
 });
 
+describe("root placeholder", () => {
+  it("renders the shared Barry error page", async () => {
+    const response = await app.request("/");
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/html");
+    expect(await response.text()).toContain('go back home</a></h1>');
+  });
+});
+
 describe("OAuth errors", () => {
   it("uses the standardized Basis API error without changing its payload", () => {
     const error = new OAuthError("invalid_request", "Request is invalid", 400, 14000);
@@ -122,7 +132,10 @@ describe("unexpected backend failures", () => {
     const response = await brokenApp.request("/oauth/jwks", { headers: { Accept: "text/html" } });
     expect(response.status).toBe(500);
     expect(response.headers.get("content-type")).toContain("text/html");
-    expect(await response.text()).toContain("Something went wrong");
+    const html = await response.text();
+    expect(html).toContain('go back home</a> (500)</h1>');
+    expect(html).not.toContain("server_error");
+    expect(html).not.toContain("test failure");
     log.mockRestore();
   });
 
@@ -646,13 +659,14 @@ describe("authorization interactions", () => {
 });
 
 describe("not-found responses", () => {
-  it("returns JSON for an unknown browser route", async () => {
+  it("renders the shared Barry page for an unknown browser route", async () => {
     const response = await app.request("/missing", { headers: { Accept: "text/html" } });
+
     expect(response.status).toBe(404);
-    expect(await response.json()).toEqual({
-      error: "not_found",
-      error_description: "The requested resource does not exist",
-    });
+    expect(response.headers.get("content-type")).toContain("text/html");
+    const html = await response.text();
+    expect(html).toContain('go back home</a> (404)</h1>');
+    expect(html).not.toContain("not_found");
   });
 
   it("returns JSON for an unknown API route", async () => {

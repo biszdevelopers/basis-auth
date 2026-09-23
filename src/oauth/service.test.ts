@@ -17,12 +17,10 @@ describe("stored client metadata", () => {
     const parsed = oauthServiceInternals.parseMetadata({
       ...metadata,
       owners: [{ id: "c6ba1588-03bb-4c61-a4e1-3c7c82e919b5", role: "role.ADMIN" }],
-      permissions: [{ key: "nethack.Projects.submit", description: "Submit a project" }],
+      permissions: { "nethack.Projects.submit": "Submit a project" },
     });
 
-    expect(parsed.permissions).toEqual([
-      { key: "nethack.Projects.submit", description: "Submit a project" },
-    ]);
+    expect(parsed.permissions).toEqual({ "nethack.Projects.submit": "Submit a project" });
   });
 
   it.each([
