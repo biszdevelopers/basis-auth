@@ -358,6 +358,7 @@ export function createApp(
       return c.redirect(redirectTo, 302);
     } catch (error: any) {
       log.error(error, "Microsoft upstream begin failed");
+      
       return frontendFlowError(c, "Upstream Error");
     }
   });
@@ -386,6 +387,7 @@ export function createApp(
       await oauth.attachUser(result.authorizationRequestId, result.user.id, new Date());
       return c.redirect(request.initialUri, 303);
     } catch (error: any) {
+      log.error("Microsoft upstream callback failed", error);
       return frontendFlowError(
         c,
         error instanceof OAuthError ? error : "Upstream Error",
