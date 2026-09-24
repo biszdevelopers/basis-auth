@@ -706,6 +706,43 @@ describe("authorization interactions", () => {
     expect(response.headers.get("location")).toBe("/oauth/authorize?client_id=client");
     expect(response.headers.get("set-cookie")).toContain("basis_bridge_error=");
   });
+
+  it("returns an actionable message for a disabled Microsoft account", async () => {
+    const oauth = {
+      getAuthorization: vi.fn().mockResolvedValue({ initialUri: "/oauth/authorize?client_id=client" }),
+    } as unknown as OAuthService;
+    const upstreamError = Object.assign(new Error("Microsoft rejected the account"), {
+      cause: {
+        error: "access_denied",
+        error_description: "AADSTS50057: The user account is disabled.",
+        error_codes: [50057],
+      },
+    });
+    const microsoft = {
+      callback: vi.fn().mockRejectedValue(upstreamError),
+    } as unknown as MicrosoftService;
+    const authorizationApp = createApp(
+      config,
+      oauth,
+      { publicJwks: { keys: [] } } as unknown as KeyService,
+      {} as SessionService,
+      {} as IdentityService,
+      microsoft,
+    );
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const response = await authorizationApp.request("/oauth/callback/microsoft?code=code&state=state", {
+      headers: { Cookie: "basis_bridge_id=valid-interaction" },
+    });
+
+    expect(response.status).toBe(303);
+    const encodedError = response.headers.get("set-cookie")?.match(/basis_bridge_error=([^;]+)/)?.[1];
+    const error = JSON.parse(Buffer.from(decodeURIComponent(encodedError!), "base64").toString("utf8"));
+    expect(error.error_description).toBe(
+      "Upstream Error: Your account has been disabled in your Microsoft tenant. Contact your tenant administrator.",
+    );
+    log.mockRestore();
+  });
 });
 
 describe("not-found responses", () => {

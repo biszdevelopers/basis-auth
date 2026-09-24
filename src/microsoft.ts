@@ -141,6 +141,73 @@ export interface MicrosoftAuthErrorPayload {
   error_uri?: string;
 }
 
+function numericErrorCodes(value: unknown): number[] | undefined {
+  const values = Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : [];
+  const codes = values
+    .map((entry) => typeof entry === "number" ? entry : Number(entry.trim()))
+    .filter((entry) => Number.isInteger(entry));
+  return codes.length > 0 ? codes : undefined;
+}
+
+/** Normalizes both token endpoint errors and authorization callback errors from openid-client. */
+export function microsoftAuthErrorPayload(error: unknown): MicrosoftAuthErrorPayload {
+  const source = error && typeof error === "object" ? error as Record<string, unknown> : {};
+  const cause = source.cause;
+  const causeValues = cause instanceof URLSearchParams
+    ? Object.fromEntries(cause.entries())
+    : cause && typeof cause === "object"
+      ? cause as Record<string, unknown>
+      : {};
+  const description = typeof causeValues.error_description === "string"
+    ? causeValues.error_description
+    : typeof source.error_description === "string"
+      ? source.error_description
+      : undefined;
+  const descriptionCode = description?.match(/AADSTS(\d+)/i)?.[1];
+
+  return {
+    error: typeof causeValues.error === "string"
+      ? causeValues.error
+      : typeof source.error === "string"
+        ? source.error
+        : "unknown_error",
+    error_description: description,
+    error_codes: numericErrorCodes(causeValues.error_codes)
+      ?? numericErrorCodes(source.error_codes)
+      ?? numericErrorCodes(descriptionCode),
+  };
+}
+
+/** Returns only curated, safe messages for errors the person signing in can act on. */
+export function userFacingMicrosoftAuthError(payload: MicrosoftAuthErrorPayload): string | undefined {
+  switch (payload.error_codes?.[0]) {
+    case 50034:
+      return "Upstream Error: Microsoft could not find your account in this tenant. Check the account you selected.";
+    case 50055:
+      return "Upstream Error: Your Microsoft account password has expired. Reset it and try again.";
+    case 50057:
+      return "Upstream Error: Your account has been disabled in your Microsoft tenant. Contact your tenant administrator.";
+    case 50076:
+    case 50079:
+      return "Upstream Error: Microsoft requires multi-factor authentication for your account. Complete MFA and try again.";
+    case 50126:
+      return "Upstream Error: Microsoft could not verify your username or password. Check your credentials and try again.";
+    case 53003:
+      return "Upstream Error: Your sign-in was blocked by your organization's access policy. Contact your tenant administrator.";
+    case 65001:
+      return "Upstream Error: Your account needs permission to access this application. Ask your tenant administrator to grant consent.";
+  }
+
+  switch (payload.error.toLowerCase().trim()) {
+    case "access_denied":
+      return "Upstream Error: Microsoft sign-in was cancelled or denied. Try again if you want to continue.";
+    case "interaction_required":
+      return "Upstream Error: Your Microsoft session requires additional verification. Sign in again and follow Microsoft's prompts.";
+    default:
+      return undefined;
+  }
+}
+
 export interface ResolvedAuthError {
   code: number;
   scenario: string;

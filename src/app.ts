@@ -17,7 +17,12 @@ import type { KeyService } from "./oauth/keys.js";
 import { APIError, OAuthError } from "./oauth/errors.js";
 import type { OAuthService } from "./oauth/service.js";
 import type { SessionService } from "./oauth/sessions.js";
-import { resolveAuthErrorCode, type MicrosoftService } from "./microsoft.js";
+import {
+  microsoftAuthErrorPayload,
+  resolveAuthErrorCode,
+  type MicrosoftService,
+  userFacingMicrosoftAuthError,
+} from "./microsoft.js";
 import { clientIp, rateLimit, RateLimiter } from "./middleware/rateLimit.js";
 import { log } from "./log.js";
 import { pkceChallenge, randomToken } from "./oauth/crypto.js";
@@ -500,13 +505,17 @@ export function createApp(
       await oauth.attachUser(result.authorizationRequestId, result.user.id, new Date());
       return c.redirect(request.initialUri, 303);
     } catch (error: any) {
-      const code = resolveAuthErrorCode(error.cause as any);
-      log.error("Upstream provider failed: Likely: " + code.scenario)
-      log.error("Microsoft upstream callback failed", error.cause.error_description);
+      const payload = microsoftAuthErrorPayload(error);
+      const code = resolveAuthErrorCode(payload);
+      const description = userFacingMicrosoftAuthError(payload)
+        ?? "Upstream Error: Cannot get your authentication information from Microsoft. Try again later.";
+      log.error(error, `Microsoft upstream callback failed (${code.code}: ${code.scenario})`);
 
       return frontendFlowError(
         c,
-        error instanceof OAuthError ? error : new OAuthError("Upstream Error", "Upstream Error: Cannot get your authentication information from Microsoft. Try again later. ", 500, code.code),
+        error instanceof OAuthError
+          ? error
+          : new OAuthError("Upstream Error", description, 500, code.code),
       );
     }
   });
