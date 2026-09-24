@@ -2,22 +2,48 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { renderErrorPage } from "@basis/schema/error-page";
 import { serveStatic } from "@hono/node-server/serve-static";
+import { decodeJwt, decodeProtectedHeader } from "jose";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { secureHeaders } from "hono/secure-headers";
-import type { AppConfig } from "./config.js";
+import {
+  DEVELOPMENT_DEMO_CALLBACK_PATH,
+  DEVELOPMENT_DEMO_CLIENT_ID,
+  DEVELOPMENT_DEMO_PATH,
+  type AppConfig,
+} from "./config.js";
 import type { IdentityService } from "./identity.js";
 import type { KeyService } from "./oauth/keys.js";
-import { OAuthError } from "./oauth/errors.js";
+import { APIError, OAuthError } from "./oauth/errors.js";
 import type { OAuthService } from "./oauth/service.js";
 import type { SessionService } from "./oauth/sessions.js";
-import type { MicrosoftService } from "./microsoft.js";
+import { resolveAuthErrorCode, type MicrosoftService } from "./microsoft.js";
 import { clientIp, rateLimit, RateLimiter } from "./middleware/rateLimit.js";
 import { log } from "./log.js";
+import { pkceChallenge, randomToken } from "./oauth/crypto.js";
 
 const SSO_COOKIE = "basis_sso";
 const INTERACTION_COOKIE = "basis_bridge_id";
 const ERROR_COOKIE = "basis_bridge_error";
+const DEVELOPMENT_DEMO_COOKIE = "basis_dev_demo";
+
+function escapeHtml(value: string) {
+  return value.replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  })[character]!);
+}
+
+function renderDevelopmentDemo(title: string, body: string) {
+  return `<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(title)}</title></head>
+<body><main><h1>${escapeHtml(title)}</h1>${body}</main></body>
+</html>`;
+}
 
 function formValue(body: Record<string, string | File | (string | File)[]>, key: string) {
   const value = body[key];
@@ -84,6 +110,30 @@ export function createApp(
     const expected = Buffer.from(csrfToken(uid));
     const supplied = Buffer.from(value);
     return expected.length === supplied.length && timingSafeEqual(expected, supplied);
+  };
+  const signDevelopmentDemoState = (state: string, verifier: string) => {
+    const payload = Buffer.from(JSON.stringify({ state, verifier })).toString("base64url");
+    const signature = createHmac("sha256", config.cookieKeys[0]!).update(payload).digest("base64url");
+    return `${payload}.${signature}`;
+  };
+  const readDevelopmentDemoState = (value?: string) => {
+    if (!value) return undefined;
+    const [payload, signature] = value.split(".");
+    if (!payload || !signature) return undefined;
+    const expected = createHmac("sha256", config.cookieKeys[0]!).update(payload).digest("base64url");
+    const expectedBytes = Buffer.from(expected);
+    const suppliedBytes = Buffer.from(signature);
+    if (expectedBytes.length !== suppliedBytes.length || !timingSafeEqual(expectedBytes, suppliedBytes)) {
+      return undefined;
+    }
+    try {
+      const parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+      return typeof parsed?.state === "string" && typeof parsed?.verifier === "string"
+        ? parsed as { state: string; verifier: string }
+        : undefined;
+    } catch {
+      return undefined;
+    }
   };
   const errorPayload = (error: any) =>
     error instanceof OAuthError
@@ -174,9 +224,72 @@ export function createApp(
   app.get("/health", (c) => c.json({ status: "ok" }));
 
   app.get("/", async (c) => {
-    //return c.redirect("/.well-known/openid-configuration");
+    if (config.environment === "development") {
+      return c.html(renderDevelopmentDemo(
+        "basis-auth development",
+        `<p><a href="${DEVELOPMENT_DEMO_PATH}">Run the OIDC demo flow</a></p>`,
+      ));
+    }
     return c.html(renderErrorPage(null));
   });
+
+  if (config.environment === "development") {
+    app.get(DEVELOPMENT_DEMO_PATH, (c) => {
+      const state = randomToken();
+      const nonce = randomToken();
+      const verifier = randomToken(48);
+      const callbackUrl = `${config.issuer}${DEVELOPMENT_DEMO_CALLBACK_PATH}`;
+      const authorizationUrl = new URL("/oauth/authorize", config.issuer);
+      authorizationUrl.searchParams.set("client_id", DEVELOPMENT_DEMO_CLIENT_ID);
+      authorizationUrl.searchParams.set("redirect_uri", callbackUrl);
+      authorizationUrl.searchParams.set("response_type", "code");
+      authorizationUrl.searchParams.set("scope", "openid profile email");
+      authorizationUrl.searchParams.set("resource", `${config.issuer}${DEVELOPMENT_DEMO_PATH}`);
+      authorizationUrl.searchParams.set("state", state);
+      authorizationUrl.searchParams.set("nonce", nonce);
+      authorizationUrl.searchParams.set("code_challenge", pkceChallenge(verifier));
+      authorizationUrl.searchParams.set("code_challenge_method", "S256");
+      setCookie(c, DEVELOPMENT_DEMO_COOKIE, signDevelopmentDemoState(state, verifier), {
+        ...cookieOptions,
+        path: DEVELOPMENT_DEMO_PATH,
+        maxAge: 10 * 60,
+      });
+      return c.redirect(authorizationUrl.toString(), 302);
+    });
+
+    app.get(DEVELOPMENT_DEMO_CALLBACK_PATH, async (c) => {
+      const saved = readDevelopmentDemoState(getCookie(c, DEVELOPMENT_DEMO_COOKIE));
+      deleteCookie(c, DEVELOPMENT_DEMO_COOKIE, {
+        ...deleteCookieOptions,
+        path: DEVELOPMENT_DEMO_PATH,
+      });
+      const code = c.req.query("code");
+      const state = c.req.query("state");
+      if (!saved || !code || state !== saved.state) {
+        return c.html(renderDevelopmentDemo(
+          "OIDC demo failed",
+          `<p>The callback was missing a valid code or state. <a href="${DEVELOPMENT_DEMO_PATH}">Try again</a>.</p>`,
+        ), 400);
+      }
+
+      const tokenSet = await oauth.exchangeAuthorizationCode({
+        code,
+        clientId: DEVELOPMENT_DEMO_CLIENT_ID,
+        redirectUri: `${config.issuer}${DEVELOPMENT_DEMO_CALLBACK_PATH}`,
+        codeVerifier: saved.verifier,
+      });
+      const idToken = typeof tokenSet.id_token === "string" ? tokenSet.id_token : undefined;
+      if (!idToken) throw new OAuthError("server_error", "The demo flow did not return an ID token", 500);
+      const decoded = {
+        header: decodeProtectedHeader(idToken),
+        payload: decodeJwt(idToken),
+      };
+      return c.html(renderDevelopmentDemo(
+        "OIDC demo succeeded",
+        `<p>The complete authorization-code flow succeeded.</p><h2>Decoded ID token</h2><pre>${escapeHtml(JSON.stringify(decoded, null, 2))}</pre><h2>Raw ID token</h2><pre>${escapeHtml(idToken)}</pre><p><a href="${DEVELOPMENT_DEMO_PATH}">Run it again</a></p>`,
+      ));
+    });
+  }
 
   async function currentSession(c: Context) {
     const session = await sessions.find(getCookie(c, SSO_COOKIE));
@@ -364,7 +477,7 @@ export function createApp(
   });
 
   app.get("/oauth/callback/microsoft", async (c) => {
-    // try {
+    try {
       const incoming = new URL(c.req.url);
       const callbackUrl = new URL(`${incoming.pathname}${incoming.search}`, config.issuer);
       const result = await microsoft.callback(callbackUrl);
@@ -386,13 +499,16 @@ export function createApp(
       setCookie(c, SSO_COOKIE, sessionToken, { ...cookieOptions, maxAge: 30 * 24 * 60 * 60 });
       await oauth.attachUser(result.authorizationRequestId, result.user.id, new Date());
       return c.redirect(request.initialUri, 303);
-    // } catch (error: any) {
-    //   log.error("Microsoft upstream callback failed", error);
-    //   return frontendFlowError(
-    //     c,
-    //     error instanceof OAuthError ? error : "Upstream Error",
-    //   );
-    // }
+    } catch (error: any) {
+      const code = resolveAuthErrorCode(error.cause as any);
+      log.error("Upstream provider failed: Likely: " + code.scenario)
+      log.error("Microsoft upstream callback failed", error.cause.error_description);
+
+      return frontendFlowError(
+        c,
+        error instanceof OAuthError ? error : new OAuthError("Upstream Error", "Upstream Error: Cannot get your authentication information from Microsoft. Try again later. ", 500, code.code),
+      );
+    }
   });
 
   app.post("/oauth/token", async (c) => {

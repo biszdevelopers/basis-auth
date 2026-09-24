@@ -165,3 +165,27 @@ These are NOT Http response codes.
 | 14501 | invalid_target | One or more resources is not registered for this application |
 | 2400 | invalid_request | Frontend authentication flow cookie not found or expired |
 | 50040 | server_error | Internal server error occured during login, such as connection error with microsoft login / authentication endpoint |
+| 50041 | server_error | Unexpected OAuth or upstream server failure not deliberately raised by DevConnect. Check the server logs and Microsoft response first. |
+
+## Microsoft OAuth Errors
+
+| Code | Microsoft trigger (`error_codes` / `error`) | Description |
+| --- | --- | --- |
+| 500410 | Default / fallback | Microsoft returned an unknown error string or unmapped numeric code. Check the complete Microsoft error response first. |
+| 500411 | `7000215` | The client secret value is invalid, commonly because the Secret ID was used instead. Check the Azure-generated Secret Value first. |
+| 500412 | `70002` | Client authentication failed because the secret or assertion is incorrect, expired, or malformed. Check the configured credential first. |
+| 500413 | `70000` | The authorization code is invalid, expired, malformed, or already redeemed. Start a new authorization flow first. |
+| 500414 | `50011` | The redirect URI does not match the authorize request or Azure registration exactly. Compare the URI character-for-character first. |
+| 500415 | `50148` | PKCE verification failed because the verifier does not match the original challenge. Check verifier persistence and challenge generation first. |
+| 500416 | `65001` | The requested permissions have not received required user or administrator consent. Check the Azure consent status first. |
+| 500417 | `50001` | The requested resource or scope is invalid, deleted, or disabled in the tenant. Check the Azure API permission and scope first. |
+| 500418 | `50076` / `50079` | Policy requires an MFA step-up before tokens can be issued. Check the user's MFA registration and policy first. |
+| 500419 | `53003` | Conditional Access blocked the attempt, such as for location or device compliance. Check the Entra sign-in logs first. |
+| 500420 | `invalid_request` | The protocol request is missing or contains an invalid required parameter. Check `code`, `redirect_uri`, and `client_id` first. |
+| 500421 | `invalid_grant` | Microsoft returned `invalid_grant` without a recognized numeric code. Check authorization-code validity and reuse first. |
+| 500422 | `invalid_client` | Microsoft rejected client authentication without a recognized numeric code. Check the client ID and credential first. |
+| 500423 | `unauthorized_client` | The app registration is not authorized for the authorization-code flow. Check the registered platform and grant configuration first. |
+| 500424 | `unsupported_grant_type` | The requested grant type is malformed or unsupported. Check that `grant_type=authorization_code` is sent first. |
+| 500425 | `invalid_scope` | One or more requested scopes are malformed or invalid. Compare them with the Azure app registration first. |
+| 500426 | `interaction_required` | Microsoft requires interactive login or policy resolution. Start an interactive authorization flow first. |
+| 500427 | `temporarily_unavailable` | Microsoft Entra ID is temporarily overloaded or unavailable. Retry with backoff first. |

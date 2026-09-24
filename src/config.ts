@@ -79,6 +79,32 @@ export type ResourceSeed = z.infer<typeof resourceSchema>;
 export type PermissionDefinitions = z.infer<typeof permissionDefinitionsSchema>;
 export type BootstrapPermissionGrant = z.infer<typeof bootstrapGrantSchema>;
 
+export const DEVELOPMENT_DEMO_CLIENT_ID = "basis-auth-dev-demo";
+export const DEVELOPMENT_DEMO_PATH = "/dev/demo";
+export const DEVELOPMENT_DEMO_CALLBACK_PATH = `${DEVELOPMENT_DEMO_PATH}/callback`;
+
+function developmentDemoConfiguration(issuer: string): {
+  client: ClientSeed;
+  resource: ResourceSeed;
+} {
+  const audience = `${issuer}${DEVELOPMENT_DEMO_PATH}`;
+  return {
+    client: {
+      clientId: DEVELOPMENT_DEMO_CLIENT_ID,
+      name: "basis-auth development demo",
+      redirectUris: [`${issuer}${DEVELOPMENT_DEMO_CALLBACK_PATH}`],
+      public: true,
+      scopes: [],
+      permissions: {},
+      resources: [audience],
+      requireConsent: true,
+      filterMode: null,
+      filterContent: [],
+    },
+    resource: { audience, scopes: [] },
+  };
+}
+
 export interface AppConfig {
   environment: "development" | "test" | "production";
   port: number;
@@ -182,6 +208,15 @@ export async function loadConfig(source: NodeJS.ProcessEnv = process.env): Promi
     env.OIDC_RESOURCES_JSON,
     z.array(resourceSchema),
   );
+  if (env.NODE_ENV === "development") {
+    if (clients.some((client) => client.clientId === DEVELOPMENT_DEMO_CLIENT_ID)) {
+      throw new Error(`${DEVELOPMENT_DEMO_CLIENT_ID} is reserved for the development demo client`);
+    }
+    const demoAudience = `${env.OIDC_ISSUER}${DEVELOPMENT_DEMO_PATH}`;
+    if (resources.some((resource) => resource.audience === demoAudience)) {
+      throw new Error(`${demoAudience} is reserved for the development demo resource`);
+    }
+  }
   const knownResources = new Set(resources.map((resource) => resource.audience));
   for (const configuredClient of clients) {
     if (configuredClient.resources.length !== 1) {
@@ -210,6 +245,10 @@ export async function loadConfig(source: NodeJS.ProcessEnv = process.env): Promi
     throw new Error("At least two OIDC cookie keys are required in production");
   }
 
+  const developmentDemo = env.NODE_ENV === "development"
+    ? developmentDemoConfiguration(env.OIDC_ISSUER)
+    : undefined;
+
   return {
     environment: env.NODE_ENV,
     port: env.PORT,
@@ -220,8 +259,8 @@ export async function loadConfig(source: NodeJS.ProcessEnv = process.env): Promi
     issuer: env.OIDC_ISSUER,
     cookieKeys,
     jwks: await loadJwks(env),
-    clients,
-    resources,
+    clients: developmentDemo ? [...clients, developmentDemo.client] : clients,
+    resources: developmentDemo ? [...resources, developmentDemo.resource] : resources,
     defaultPermission: env.DEFAULT_PERMISSION,
     bootstrapPermissionGrants: parseJson(
       "BOOTSTRAP_PERMISSION_GRANTS_JSON",

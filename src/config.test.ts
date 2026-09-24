@@ -157,5 +157,14 @@ describe("configuration", () => {
       OIDC_ISSUER: "http://localhost:3000",
     });
     expect(config.issuer).toBe("http://localhost:3000");
+    expect(config.clients).toContainEqual(expect.objectContaining({
+      clientId: "basis-auth-dev-demo",
+      public: true,
+      redirectUris: ["http://localhost:3000/dev/demo/callback"],
+    }));
+    expect(config.resources).toContainEqual({
+      audience: "http://localhost:3000/dev/demo",
+      scopes: [],
+    });
   });
 });

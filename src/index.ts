@@ -32,6 +32,9 @@ const internalApp = createInternalApp(config.internalApiToken, internalUsers);
 
 const server = serve({ fetch: app.fetch, port: config.port }, () => {
   console.log(`basis-auth listening on ${config.issuer}`);
+  if (config.environment === "development") {
+    console.log(`OIDC demo: ${config.issuer}/dev/demo`);
+  }
 });
 const internalServer = serve(
   { fetch: internalApp.fetch, hostname: config.internalApiHost, port: config.internalApiPort },

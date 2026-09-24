@@ -129,3 +129,187 @@ export function createMicrosoftService(
 }
 
 export type MicrosoftService = ReturnType<typeof createMicrosoftService>;
+
+
+export interface MicrosoftAuthErrorPayload {
+  error: string;
+  error_description?: string;
+  error_codes?: number[];
+  timestamp?: string;
+  trace_id?: string;
+  correlation_id?: string;
+  error_uri?: string;
+}
+
+export interface ResolvedAuthError {
+  code: number;
+  scenario: string;
+  matchedBy: 'numeric_code' | 'protocol_error' | 'fallback';
+  rawError: string;
+  rawErrorCode?: number;
+}
+
+/**
+ * Maps Microsoft OAuth token exchange errors to internal application error codes (500410 + N).
+ * Evaluates `error_codes[0]` first, falling back to the standard `error` string.
+ */
+export function resolveAuthErrorCode(payload: MicrosoftAuthErrorPayload): ResolvedAuthError {
+  const primaryCode = payload.error_codes?.[0];
+  const protocolError = payload.error?.toLowerCase()?.trim();
+
+  // Priority 1: Specific Microsoft AADSTS Numeric Codes (error_codes[0])
+  if (primaryCode !== undefined) {
+    switch (primaryCode) {
+      case 7000215:
+        return {
+          code: 500411,
+          scenario: "Invalid client secret value sent (often confused with Secret ID).",
+          matchedBy: 'numeric_code',
+          rawError: payload.error,
+          rawErrorCode: primaryCode,
+        };
+      case 70002:
+        return {
+          code: 500412,
+          scenario: "Client authentication failed or invalid client secret.",
+          matchedBy: 'numeric_code',
+          rawError: payload.error,
+          rawErrorCode: primaryCode,
+        };
+      case 70000:
+        return {
+          code: 500413,
+          scenario: "Authorization code is invalid, expired, or already redeemed.",
+          matchedBy: 'numeric_code',
+          rawError: payload.error,
+          rawErrorCode: primaryCode,
+        };
+      case 50011:
+        return {
+          code: 500414,
+          scenario: "Redirect URI mismatch between authorize call and token request.",
+          matchedBy: 'numeric_code',
+          rawError: payload.error,
+          rawErrorCode: primaryCode,
+        };
+      case 50148:
+        return {
+          code: 500415,
+          scenario: "PKCE code verifier validation failed.",
+          matchedBy: 'numeric_code',
+          rawError: payload.error,
+          rawErrorCode: primaryCode,
+        };
+      case 65001:
+        return {
+          code: 500416,
+          scenario: "User or admin consent is required for requested scopes.",
+          matchedBy: 'numeric_code',
+          rawError: payload.error,
+          rawErrorCode: primaryCode,
+        };
+      case 50001:
+        return {
+          code: 500417,
+          scenario: "Invalid or disabled resource/scope requested.",
+          matchedBy: 'numeric_code',
+          rawError: payload.error,
+          rawErrorCode: primaryCode,
+        };
+      case 50076:
+      case 50079:
+        return {
+          code: 500418,
+          scenario: "Multi-Factor Authentication (MFA) challenge required.",
+          matchedBy: 'numeric_code',
+          rawError: payload.error,
+          rawErrorCode: primaryCode,
+        };
+      case 53003:
+        return {
+          code: 500419,
+          scenario: "Blocked by Azure AD Conditional Access policy.",
+          matchedBy: 'numeric_code',
+          rawError: payload.error,
+          rawErrorCode: primaryCode,
+        };
+    }
+  }
+
+  // Priority 2: Standard OAuth 2.0 Protocol Errors (`error` string)
+  switch (protocolError) {
+    case 'invalid_request':
+      return {
+        code: 500420,
+        scenario: "Malformed request parameters (missing mandatory parameters).",
+        matchedBy: 'protocol_error',
+        rawError: payload.error,
+        rawErrorCode: primaryCode,
+      };
+    case 'invalid_grant':
+      return {
+        code: 500421,
+        scenario: "Generic invalid grant (code/refresh token invalid or expired).",
+        matchedBy: 'protocol_error',
+        rawError: payload.error,
+        rawErrorCode: primaryCode,
+      };
+    case 'invalid_client':
+      return {
+        code: 500422,
+        scenario: "Generic client authentication failure.",
+        matchedBy: 'protocol_error',
+        rawError: payload.error,
+        rawErrorCode: primaryCode,
+      };
+    case 'unauthorized_client':
+      return {
+        code: 500423,
+        scenario: "Client is not authorized to use the authorization_code grant type.",
+        matchedBy: 'protocol_error',
+        rawError: payload.error,
+        rawErrorCode: primaryCode,
+      };
+    case 'unsupported_grant_type':
+      return {
+        code: 500424,
+        scenario: "Requested grant type is not supported by Microsoft Entra ID.",
+        matchedBy: 'protocol_error',
+        rawError: payload.error,
+        rawErrorCode: primaryCode,
+      };
+    case 'invalid_scope':
+      return {
+        code: 500425,
+        scenario: "Invalid, unknown, or malformed scopes requested.",
+        matchedBy: 'protocol_error',
+        rawError: payload.error,
+        rawErrorCode: primaryCode,
+      };
+    case 'interaction_required':
+      return {
+        code: 500426,
+        scenario: "User interaction is required before token issuance.",
+        matchedBy: 'protocol_error',
+        rawError: payload.error,
+        rawErrorCode: primaryCode,
+      };
+    case 'temporarily_unavailable':
+      return {
+        code: 500427,
+        scenario: "Microsoft Entra service is temporarily degraded or down.",
+        matchedBy: 'protocol_error',
+        rawError: payload.error,
+        rawErrorCode: primaryCode,
+      };
+  }
+
+  // Fallback: Default code for unmapped errors
+  return {
+    code: 500410,
+    scenario: "Unclassified Microsoft authentication error.",
+    matchedBy: 'fallback',
+    rawError: payload.error,
+    rawErrorCode: primaryCode,
+  };
+}

@@ -59,6 +59,56 @@ describe("root placeholder", () => {
     expect(response.headers.get("content-type")).toContain("text/html");
     expect(await response.text()).toContain('go back home</a></h1>');
   });
+
+  it("offers the self-test flow only in development", async () => {
+    const devConfig = {
+      ...config,
+      environment: "development",
+      issuer: "http://localhost:3000",
+    } as AppConfig;
+    const exchangeAuthorizationCode = vi.fn().mockResolvedValue({
+      id_token: [
+        Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT" })).toString("base64url"),
+        Buffer.from(JSON.stringify({ sub: "demo-user", aud: "basis-auth-dev-demo" })).toString("base64url"),
+        "signature",
+      ].join("."),
+    });
+    const devApp = createApp(
+      devConfig,
+      { exchangeAuthorizationCode } as unknown as OAuthService,
+      { publicJwks: { keys: [] } } as unknown as KeyService,
+      {} as SessionService,
+      {} as IdentityService,
+      {} as MicrosoftService,
+    );
+
+    const rootResponse = await devApp.request("/");
+    expect(await rootResponse.text()).toContain('href="/dev/demo"');
+
+    const startResponse = await devApp.request("/dev/demo");
+    expect(startResponse.status).toBe(302);
+    const authorizationUrl = new URL(startResponse.headers.get("location")!);
+    expect(authorizationUrl.pathname).toBe("/oauth/authorize");
+    expect(authorizationUrl.searchParams.get("client_id")).toBe("basis-auth-dev-demo");
+    expect(authorizationUrl.searchParams.get("redirect_uri")).toBe("http://localhost:3000/dev/demo/callback");
+    expect(authorizationUrl.searchParams.get("code_challenge_method")).toBe("S256");
+
+    const cookie = startResponse.headers.get("set-cookie")!.split(";", 1)[0]!;
+    const callbackResponse = await devApp.request(
+      `/dev/demo/callback?code=demo-code&state=${authorizationUrl.searchParams.get("state")}`,
+      { headers: { Cookie: cookie } },
+    );
+    expect(callbackResponse.status).toBe(200);
+    const callbackHtml = await callbackResponse.text();
+    expect(callbackHtml).toContain("OIDC demo succeeded");
+    expect(callbackHtml).toContain('&quot;sub&quot;: &quot;demo-user&quot;');
+    expect(exchangeAuthorizationCode).toHaveBeenCalledWith(expect.objectContaining({
+      code: "demo-code",
+      clientId: "basis-auth-dev-demo",
+      redirectUri: "http://localhost:3000/dev/demo/callback",
+      codeVerifier: expect.any(String),
+    }));
+  });
 });
 
 describe("OAuth errors", () => {
