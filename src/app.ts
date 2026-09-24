@@ -364,7 +364,7 @@ export function createApp(
   });
 
   app.get("/oauth/callback/microsoft", async (c) => {
-    try {
+    // try {
       const incoming = new URL(c.req.url);
       const callbackUrl = new URL(`${incoming.pathname}${incoming.search}`, config.issuer);
       const result = await microsoft.callback(callbackUrl);
@@ -386,13 +386,13 @@ export function createApp(
       setCookie(c, SSO_COOKIE, sessionToken, { ...cookieOptions, maxAge: 30 * 24 * 60 * 60 });
       await oauth.attachUser(result.authorizationRequestId, result.user.id, new Date());
       return c.redirect(request.initialUri, 303);
-    } catch (error: any) {
-      log.error("Microsoft upstream callback failed", error);
-      return frontendFlowError(
-        c,
-        error instanceof OAuthError ? error : "Upstream Error",
-      );
-    }
+    // } catch (error: any) {
+    //   log.error("Microsoft upstream callback failed", error);
+    //   return frontendFlowError(
+    //     c,
+    //     error instanceof OAuthError ? error : "Upstream Error",
+    //   );
+    // }
   });
 
   app.post("/oauth/token", async (c) => {
