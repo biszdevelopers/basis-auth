@@ -38,7 +38,7 @@ describe("protocol metadata", () => {
       userinfo_endpoint: "https://auth.example.test/oauth/userinfo",
       jwks_uri: "https://auth.example.test/oauth/jwks",
       response_types_supported: ["code"],
-      grant_types_supported: ["authorization_code", "refresh_token"],
+      grant_types_supported: ["authorization_code", "refresh_token", "client_credentials"],
       code_challenge_methods_supported: ["S256"],
     });
   });
@@ -66,7 +66,13 @@ describe("root placeholder", () => {
       environment: "development",
       issuer: "http://localhost:3000",
     } as AppConfig;
+    const accessToken = [
+      Buffer.from(JSON.stringify({ alg: "RS256", typ: "at+jwt" })).toString("base64url"),
+      Buffer.from(JSON.stringify({ sub: "demo-user", aud: "http://localhost:3000/dev/demo", gty: "authorization_code" })).toString("base64url"),
+      "access-signature",
+    ].join(".");
     const exchangeAuthorizationCode = vi.fn().mockResolvedValue({
+      access_token: accessToken,
       id_token: [
         Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT" })).toString("base64url"),
         Buffer.from(JSON.stringify({ sub: "demo-user", aud: "basis-auth-dev-demo" })).toString("base64url"),
@@ -102,6 +108,10 @@ describe("root placeholder", () => {
     const callbackHtml = await callbackResponse.text();
     expect(callbackHtml).toContain("OIDC demo succeeded");
     expect(callbackHtml).toContain('&quot;sub&quot;: &quot;demo-user&quot;');
+    expect(callbackHtml).toContain("Decoded access token");
+    expect(callbackHtml).toContain('&quot;aud&quot;: &quot;http://localhost:3000/dev/demo&quot;');
+    expect(callbackHtml).toContain("Raw access token");
+    expect(callbackHtml).toContain(accessToken);
     expect(exchangeAuthorizationCode).toHaveBeenCalledWith(expect.objectContaining({
       code: "demo-code",
       clientId: "basis-auth-dev-demo",
@@ -158,6 +168,57 @@ describe("OAuth errors", () => {
       error_description: "Client authentication failed",
     });
     log.mockRestore();
+  });
+});
+
+describe("client credentials grant", () => {
+  it.each([
+    [
+      "application/x-www-form-urlencoded",
+      "grant_type=client_credentials&client_id=application-id&client_secret=application-secret&scope=projects.read&resource=urn%3Abasis%3Aapi%3Aprojects",
+    ],
+    [
+      "application/json",
+      JSON.stringify({
+        grant_type: "client_credentials",
+        client_id: "application-id",
+        client_secret: "application-secret",
+        scope: "projects.read",
+        resource: "urn:basis:api:projects",
+      }),
+    ],
+  ])("accepts %s token requests using standard OAuth fields", async (contentType, body) => {
+    const exchangeClientCredentials = vi.fn().mockResolvedValue({
+      access_token: "application-access-token",
+      token_type: "Bearer",
+      expires_in: 600,
+      scope: "projects.read",
+    });
+    const tokenApp = createApp(
+      config,
+      { exchangeClientCredentials } as unknown as OAuthService,
+      { publicJwks: { keys: [] } } as unknown as KeyService,
+      {} as SessionService,
+      {} as IdentityService,
+      {} as MicrosoftService,
+    );
+
+    const response = await tokenApp.request("/oauth/token", {
+      method: "POST",
+      headers: {
+        "Content-Type": contentType,
+      },
+      body,
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ access_token: "application-access-token" });
+    expect(exchangeClientCredentials).toHaveBeenCalledWith({
+      clientId: "application-id",
+      clientSecret: "application-secret",
+      scope: "projects.read",
+      resource: "urn:basis:api:projects",
+    });
   });
 });
 

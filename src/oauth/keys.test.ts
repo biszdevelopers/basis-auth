@@ -90,6 +90,34 @@ describe("ID token claims", () => {
 });
 
 describe("access-token user state", () => {
+  it("issues and verifies client-credentials tokens without a user", async () => {
+    const config = buildConfig();
+    const jwk = await rsaJwk();
+    (config.jwks as { keys: unknown[] }).keys = [jwk];
+    const findUserCompact = vi.fn();
+    const keys = await createKeyService(config, { findUserCompact } as unknown as IdentityService);
+
+    const token = await keys.issueApplicationAccessToken({
+      clientId: "application-id",
+      scopes: ["projects.read"],
+      resource: "urn:basis:api:projects",
+    });
+
+    expect(decodeJwt(token)).toMatchObject({
+      sub: "application-id",
+      client_id: "application-id",
+      scope: "projects.read",
+      permissions: [],
+      gty: "client_credentials",
+      aud: "urn:basis:api:projects",
+    });
+    await expect(keys.verifyAccessToken(token, "urn:basis:api:projects")).resolves.toMatchObject({
+      sub: "application-id",
+      client_id: "application-id",
+    });
+    expect(findUserCompact).not.toHaveBeenCalled();
+  });
+
   it("rejects disabled subjects and tokens at the revocation barrier", async () => {
     const config = buildConfig();
     const jwk = await rsaJwk();
@@ -108,7 +136,16 @@ describe("access-token user state", () => {
       scopes: ["user.write.email"],
       resource: "urn:basis:api:test",
     });
+    expect(decodeJwt(token).gty).toBe("authorization_code");
     await expect(keys.verifyAccessToken(token)).resolves.toMatchObject({ sub: USER_ID });
+    const refreshedToken = await keys.issueAccessToken({
+      userId: USER_ID,
+      clientId: "client",
+      scopes: ["user.write.email"],
+      resource: "urn:basis:api:test",
+      grantType: "refresh_token",
+    });
+    expect(decodeJwt(refreshedToken).gty).toBe("refresh_token");
 
     const issuedAt = decodeJwt(token).iat!;
     user.tokensValidAfter = new Date(issuedAt * 1000);

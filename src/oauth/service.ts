@@ -374,6 +374,7 @@ export function createOAuthService(
     authenticatedAt?: Date;
     familyId?: string;
     refreshExpiresAt?: Date;
+    grantType: "authorization_code" | "refresh_token";
   }) {
     const user = await identity.findUser(input.userId);
     if (!user || user.disabled) {
@@ -461,6 +462,7 @@ export function createOAuthService(
       resource: authorizationCode.resource,
       nonce: authorizationCode.nonce,
       authenticatedAt: authorizationCode.authenticatedAt,
+      grantType: "authorization_code",
     });
   }
 
@@ -505,7 +507,59 @@ export function createOAuthService(
       resource: stored.resource,
       familyId: stored.familyId,
       refreshExpiresAt: stored.expiresAt,
+      grantType: "refresh_token",
     });
+  }
+
+  async function exchangeClientCredentials(input: {
+    clientId: string;
+    clientSecret?: string;
+    scope?: string;
+    resource?: string;
+  }) {
+    const client = await authenticateClient(input.clientId, input.clientSecret);
+    if (client.metadata.public) {
+      throw new OAuthError("unauthorized_client", "Public clients cannot use the client_credentials grant");
+    }
+
+    const scopes = input.scope === undefined
+      ? client.metadata.scopes
+      : [...new Set(input.scope.split(" ").filter(Boolean))];
+    if (!scopesCover(client.metadata.scopes, scopes)) {
+      throw new OAuthError("invalid_scope", "The client is not allowed to request one or more scopes", 400, 14401);
+    }
+
+    const resource = input.resource ?? (client.resources.length === 1 ? client.resources[0] : undefined);
+    if (!resource || !client.resources.includes(resource)) {
+      throw new OAuthError("invalid_target", `The resource "${resource}" is not registered for this client`, 400, 14501);
+    }
+    const [resourceServer] = await db
+      .select()
+      .from(resourceServers)
+      .where(eq(resourceServers.audience, resource))
+      .limit(1);
+    if (!resourceServer) {
+      throw new OAuthError(
+        "invalid_target",
+        `Resource server "${resource}" is not registered; add it with "bun run clients" or OIDC_RESOURCES_JSON`,
+        400,
+        14407,
+      );
+    }
+    if (!scopesCover(resourceServer.scopes, scopes)) {
+      throw new OAuthError("invalid_scope", "A requested scope is not supported by the resource", 400, 14401);
+    }
+
+    return {
+      access_token: await keys.issueApplicationAccessToken({
+        clientId: client.clientId,
+        scopes,
+        resource,
+      }),
+      token_type: "Bearer",
+      expires_in: 600,
+      scope: scopes.join(" "),
+    };
   }
 
   async function revoke(token: string, clientId: string, clientSecret?: string) {
@@ -526,6 +580,9 @@ export function createOAuthService(
       payload = await keys.verifyAccessToken(accessToken);
     } catch {
       throw new OAuthError("invalid_token", "Access token is invalid", 401);
+    }
+    if (payload.gty === "client_credentials") {
+      throw new OAuthError("invalid_token", "UserInfo requires a user access token", 401);
     }
     const account = await identity.findAccount(payload.sub);
     if (!account) throw new OAuthError("invalid_token", "User no longer exists", 401);
@@ -548,6 +605,7 @@ export function createOAuthService(
     denyAuthorization,
     exchangeAuthorizationCode,
     exchangeRefreshToken,
+    exchangeClientCredentials,
     revoke,
     userInfo,
   };

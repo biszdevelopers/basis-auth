@@ -4,6 +4,7 @@ import type { IdentityService } from "../identity.js";
 import type { KeyService } from "./keys.js";
 import { createOAuthService, oauthServiceInternals } from "./service.js";
 import { resourceServers } from "../database/schema.js";
+import { hashClientSecret } from "../database/seed.js";
 
 const metadata = {
   name: "Portal",
@@ -196,5 +197,62 @@ describe("authorization resource check", () => {
         codeChallengeMethod: "S256",
       }),
     ).resolves.toMatchObject({ interactionToken: expect.any(String) });
+  });
+});
+
+describe("client credentials grant", () => {
+  it("issues an application token for an authenticated confidential client", async () => {
+    const clientRow = {
+      clientId: "application-id",
+      secretHash: await hashClientSecret("application-secret"),
+      resources: ["urn:basis:api:projects"],
+      requireConsent: false,
+      filterMode: null,
+      filterContent: [],
+      metadata: {
+        name: "Application",
+        owners: [{ id: "c6ba1588-03bb-4c61-a4e1-3c7c82e919b5", role: "role.ADMIN" }],
+        redirectUris: ["https://application.example.test/callback"],
+        public: false,
+        scopes: ["projects.read"],
+        permissions: {},
+      },
+    };
+    const execute = vi.fn(async () => [clientRow]);
+    const db = {
+      select: () => ({
+        from: (table: unknown) => ({
+          where: () => ({
+            limit: () => table === resourceServers
+              ? [{ audience: "urn:basis:api:projects", scopes: ["projects.read"] }]
+              : { prepare: () => ({ execute }) },
+          }),
+        }),
+      }),
+    } as unknown as Parameters<typeof createOAuthService>[1];
+    const issueApplicationAccessToken = vi.fn(async () => "application-token");
+    const service = createOAuthService(
+      { issuer: "https://auth.example.test" } as AppConfig,
+      db,
+      { issueApplicationAccessToken } as unknown as KeyService,
+      {} as IdentityService,
+    );
+
+    await expect(service.exchangeClientCredentials({
+      clientId: "application-id",
+      clientSecret: "application-secret",
+      scope: "projects.read",
+      resource: "urn:basis:api:projects",
+    })).resolves.toEqual({
+      access_token: "application-token",
+      token_type: "Bearer",
+      expires_in: 600,
+      scope: "projects.read",
+    });
+    expect(issueApplicationAccessToken).toHaveBeenCalledWith({
+      clientId: "application-id",
+      scopes: ["projects.read"],
+      resource: "urn:basis:api:projects",
+    });
   });
 });

@@ -50,12 +50,31 @@ function renderDevelopmentDemo(title: string, body: string) {
 </html>`;
 }
 
-function formValue(body: Record<string, string | File | (string | File)[]>, key: string) {
+type OAuthRequestBody = Record<string, unknown>;
+
+function formValue(body: OAuthRequestBody, key: string) {
   const value = body[key];
   return typeof value === "string" ? value : undefined;
 }
 
-function clientCredentials(c: Context, body: Record<string, string | File | (string | File)[]>) {
+async function oauthRequestBody(c: Context): Promise<OAuthRequestBody> {
+  const contentType = c.req.header("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+  if (contentType === "application/json") {
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      throw new OAuthError("invalid_request", "Request body must be valid JSON");
+    }
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      throw new OAuthError("invalid_request", "Request body must be a JSON object");
+    }
+    return body as OAuthRequestBody;
+  }
+  return await c.req.parseBody();
+}
+
+function clientCredentials(c: Context, body: OAuthRequestBody, allowBodySecret = false) {
   const authorization = c.req.header("authorization");
   if (authorization?.startsWith("Basic ")) {
     let decoded: string;
@@ -78,10 +97,14 @@ function clientCredentials(c: Context, body: Record<string, string | File | (str
       clientSecret: decode(decoded.slice(separator + 1)),
     };
   }
-  if (formValue(body, "client_secret")) {
+  const clientSecret = formValue(body, "client_secret");
+  if (clientSecret && !allowBodySecret) {
     throw new OAuthError("invalid_client", "Use client_secret_basic for confidential clients", 401);
   }
-  return { clientId: formValue(body, "client_id") ?? "", clientSecret: undefined };
+  return {
+    clientId: formValue(body, "client_id") ?? "",
+    clientSecret: allowBodySecret ? clientSecret : undefined,
+  };
 }
 
 function acceptsHtml(c: Context) {
@@ -184,10 +207,10 @@ export function createApp(
     revocation_endpoint_auth_methods_supported: ["client_secret_basic", "none"],
     end_session_endpoint: `${config.issuer}/oauth/logout`,
     response_types_supported: ["code"],
-    grant_types_supported: ["authorization_code", "refresh_token"],
+    grant_types_supported: ["authorization_code", "refresh_token", "client_credentials"],
     subject_types_supported: ["public"],
     id_token_signing_alg_values_supported: ["RS256"],
-    token_endpoint_auth_methods_supported: ["client_secret_basic", "none"],
+    token_endpoint_auth_methods_supported: ["client_secret_basic", "client_secret_post", "none"],
     scopes_supported: ["openid", "profile", "email", "offline_access"],
     claims_supported: ["sub", "name", "picture", "email", "email_verified"],
     code_challenge_methods_supported: ["S256"],
@@ -200,8 +223,8 @@ export function createApp(
     revocation_endpoint: `${config.issuer}/oauth/revoke`,
     revocation_endpoint_auth_methods_supported: ["client_secret_basic", "none"],
     response_types_supported: ["code"],
-    grant_types_supported: ["authorization_code", "refresh_token"],
-    token_endpoint_auth_methods_supported: ["client_secret_basic", "none"],
+    grant_types_supported: ["authorization_code", "refresh_token", "client_credentials"],
+    token_endpoint_auth_methods_supported: ["client_secret_basic", "client_secret_post", "none"],
     code_challenge_methods_supported: ["S256"],
   };
 
@@ -289,13 +312,19 @@ export function createApp(
       });
       const idToken = typeof tokenSet.id_token === "string" ? tokenSet.id_token : undefined;
       if (!idToken) throw new OAuthError("server_error", "The demo flow did not return an ID token", 500);
-      const decoded = {
+      const accessToken = typeof tokenSet.access_token === "string" ? tokenSet.access_token : undefined;
+      if (!accessToken) throw new OAuthError("server_error", "The demo flow did not return an access token", 500);
+      const decodedIdToken = {
         header: decodeProtectedHeader(idToken),
         payload: decodeJwt(idToken),
       };
+      const decodedAccessToken = {
+        header: decodeProtectedHeader(accessToken),
+        payload: decodeJwt(accessToken),
+      };
       return c.html(renderDevelopmentDemo(
         "OIDC demo succeeded",
-        `<p>The complete authorization-code flow succeeded.</p><h2>Decoded ID token</h2><pre>${escapeHtml(JSON.stringify(decoded, null, 2))}</pre><h2>Raw ID token</h2><pre>${escapeHtml(idToken)}</pre><p><a href="${DEVELOPMENT_DEMO_PATH}">Run it again</a></p>`,
+        `<p>The complete authorization-code flow succeeded.</p><h2>Decoded ID token</h2><pre>${escapeHtml(JSON.stringify(decodedIdToken, null, 2))}</pre><h2>Raw ID token</h2><pre>${escapeHtml(idToken)}</pre><h2>Decoded access token</h2><pre>${escapeHtml(JSON.stringify(decodedAccessToken, null, 2))}</pre><h2>Raw access token</h2><pre>${escapeHtml(accessToken)}</pre><p><a href="${DEVELOPMENT_DEMO_PATH}">Run it again</a></p>`,
       ));
     });
   }
@@ -525,9 +554,9 @@ export function createApp(
   });
 
   app.post("/oauth/token", async (c) => {
-    const body = await c.req.parseBody();
-    const credentials = clientCredentials(c, body);
+    const body = await oauthRequestBody(c);
     const grantType = formValue(body, "grant_type");
+    const credentials = clientCredentials(c, body, grantType === "client_credentials");
     let response: Record<string, unknown>;
     if (grantType === "authorization_code") {
       const code = formValue(body, "code");
@@ -542,10 +571,15 @@ export function createApp(
       const refreshToken = formValue(body, "refresh_token");
       if (!refreshToken) throw new OAuthError("invalid_request", "refresh_token is required");
       response = await oauth.exchangeRefreshToken({ refreshToken, ...credentials });
+    } else if (grantType === "client_credentials") {
+      response = await oauth.exchangeClientCredentials({
+        ...credentials,
+        scope: formValue(body, "scope"),
+        resource: formValue(body, "resource"),
+      });
     } else {
       throw new OAuthError("unsupported_grant_type", "Unsupported grant_type");
     }
-    console.log(response)
     return c.json(response);
   });
 

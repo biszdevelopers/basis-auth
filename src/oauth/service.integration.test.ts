@@ -109,6 +109,7 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
       aud: "urn:basis:api:projects",
       client_id: "portal",
       permissions: ["participant"],
+      gty: "authorization_code",
     });
     await expect(
       oauth.exchangeAuthorizationCode({
@@ -125,6 +126,11 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
       refreshToken: firstRefresh,
       clientId: "portal",
       clientSecret: "portal-secret-long-enough",
+    });
+    await expect(keys.verifyAccessToken(String(rotated.access_token))).resolves.toMatchObject({
+      sub: user.id,
+      client_id: "portal",
+      gty: "refresh_token",
     });
     await expect(
       oauth.exchangeRefreshToken({

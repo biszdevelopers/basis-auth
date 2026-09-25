@@ -20,6 +20,7 @@ const basisAuthAccessTokenClaimsSchema = accessTokenClaimsSchema
   .extend({
     aud: accessTokenClaimsSchema.shape.aud.optional(),
     permissions: z.array(z.string()),
+    gty: z.enum(["authorization_code", "refresh_token", "client_credentials"]),
   });
 
 function toPublicJwk(jwk: JWK): JWK {
@@ -31,7 +32,9 @@ export type AccessTokenClaims = Pick<
   "sub" | "client_id" | "scope" | "jti" | "iat" | "exp" | "iss"
 > &
   Pick<SchemaAccessTokenClaims, "permissions"> &
-  Partial<Pick<SchemaAccessTokenClaims, "aud">>;
+  Partial<Pick<SchemaAccessTokenClaims, "aud">> & {
+    gty: "authorization_code" | "refresh_token" | "client_credentials";
+  };
 
 type UserState = { id: string; disabled: boolean; tokensValidAfter: Date | null };
 type Account = Awaited<ReturnType<IdentityService["findAccount"]>>;
@@ -52,6 +55,7 @@ export async function createKeyService(config: AppConfig, identity: IdentityServ
       clientId: string;
       scopes: string[];
       resource?: string;
+      grantType?: "authorization_code" | "refresh_token";
     },
     preloaded?: { user?: UserState; permissions?: string[] },
   ) {
@@ -64,12 +68,34 @@ export async function createKeyService(config: AppConfig, identity: IdentityServ
       client_id: input.clientId,
       scope: input.scopes.join(" "),
       permissions,
+      gty: input.grantType ?? "authorization_code",
     })
       .setProtectedHeader({ alg: "RS256", kid: activeJwk.kid, typ: "at+jwt" })
       .setIssuer(config.issuer)
       .setSubject(input.userId);
     if (input.resource) token.setAudience(input.resource);
     return token
+      .setJti(crypto.randomUUID())
+      .setIssuedAt()
+      .setExpirationTime("10m")
+      .sign(signingKey);
+  }
+
+  async function issueApplicationAccessToken(input: {
+    clientId: string;
+    scopes: string[];
+    resource: string;
+  }) {
+    return new SignJWT({
+      client_id: input.clientId,
+      scope: input.scopes.join(" "),
+      permissions: [],
+      gty: "client_credentials",
+    })
+      .setProtectedHeader({ alg: "RS256", kid: activeJwk.kid, typ: "at+jwt" })
+      .setIssuer(config.issuer)
+      .setSubject(input.clientId)
+      .setAudience(input.resource)
       .setJti(crypto.randomUUID())
       .setIssuedAt()
       .setExpirationTime("10m")
@@ -118,6 +144,9 @@ export async function createKeyService(config: AppConfig, identity: IdentityServ
       throw new Error("Access token claims are invalid");
     }
     const claims = parsed.data as AccessTokenClaims;
+    if (payload.gty === "client_credentials" && claims.sub === claims.client_id) {
+      return claims;
+    }
     const user = await identity.findUserCompact(claims.sub);
     if (
       !user ||
@@ -129,7 +158,7 @@ export async function createKeyService(config: AppConfig, identity: IdentityServ
     return claims;
   }
 
-  return { publicJwks, issueAccessToken, issueIdToken, verifyAccessToken };
+  return { publicJwks, issueAccessToken, issueApplicationAccessToken, issueIdToken, verifyAccessToken };
 }
 
 export type KeyService = Awaited<ReturnType<typeof createKeyService>>;
