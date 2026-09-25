@@ -225,6 +225,10 @@ export function createApp(
     };
   };
 
+  app.use("/api/picture/*", async (c, next) => {
+    await next();
+    c.header("Cross-Origin-Resource-Policy", "same-site");
+  });
   app.use("*", secureHeaders());
   app.get("/health", (c) => c.json({ status: "ok" }));
 

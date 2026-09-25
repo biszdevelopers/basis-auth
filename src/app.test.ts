@@ -242,6 +242,7 @@ describe("SSO account API", () => {
       headers: { Cookie: "basis_sso=session-token" },
     });
     expect(response.status).toBe(200);
+    expect(response.headers.get("cross-origin-resource-policy")).toBe("same-site");
     expect(response.headers.get("content-type")).toContain("image/png");
     expect(Buffer.from(await response.arrayBuffer())).toEqual(user.picture);
   });
