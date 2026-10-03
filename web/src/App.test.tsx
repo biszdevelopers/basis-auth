@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { App } from "./App";
 
@@ -63,6 +63,14 @@ it("keeps loading the consent page until the profile is rendered", async () => {
     { timeout: 1000 },
   );
   expect(screen.getByTestId("main-content")).toHaveClass("opacity-100");
+
+  const whyButton = screen.getByRole("button", { name: "Why am I here?" });
+  fireEvent.click(whyButton);
+  expect(await screen.findByRole("link", { name: /Find out more about DevConnect/ })).toBeInTheDocument();
+  fireEvent.pointerDown(document.body);
+  await waitFor(() => {
+    expect(screen.queryByRole("link", { name: /Find out more about DevConnect/ })).not.toBeInTheDocument();
+  });
 });
 
 it("stops reloading and shows an error when the interaction stays unavailable", async () => {

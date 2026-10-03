@@ -3,17 +3,52 @@ import { HoverCard as HoverCardPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
 
+interface HoverCardContextValue {
+  open: boolean
+  setOpen: (open: boolean) => void
+}
+
+const HoverCardContext = React.createContext<HoverCardContextValue | null>(null)
+
 function HoverCard({
+  open: controlledOpen,
+  defaultOpen = false,
+  onOpenChange,
   ...props
 }: React.ComponentProps<typeof HoverCardPrimitive.Root>) {
-  return <HoverCardPrimitive.Root data-slot="hover-card" {...props} />
+  const [uncontrolledOpen, setUncontrolledOpen] = React.useState(defaultOpen)
+  const open = controlledOpen ?? uncontrolledOpen
+  const setOpen = React.useCallback((nextOpen: boolean) => {
+    if (controlledOpen === undefined) setUncontrolledOpen(nextOpen)
+    onOpenChange?.(nextOpen)
+  }, [controlledOpen, onOpenChange])
+
+  return (
+    <HoverCardContext.Provider value={{ open, setOpen }}>
+      <HoverCardPrimitive.Root
+        data-slot="hover-card"
+        open={open}
+        onOpenChange={setOpen}
+        {...props}
+      />
+    </HoverCardContext.Provider>
+  )
 }
 
 function HoverCardTrigger({
+  onClick,
   ...props
 }: React.ComponentProps<typeof HoverCardPrimitive.Trigger>) {
+  const hoverCard = React.useContext(HoverCardContext)
   return (
-    <HoverCardPrimitive.Trigger data-slot="hover-card-trigger" {...props} />
+    <HoverCardPrimitive.Trigger
+      data-slot="hover-card-trigger"
+      onClick={(event) => {
+        onClick?.(event)
+        if (!event.defaultPrevented) hoverCard?.setOpen(true)
+      }}
+      {...props}
+    />
   )
 }
 

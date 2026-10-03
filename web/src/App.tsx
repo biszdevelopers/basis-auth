@@ -99,7 +99,7 @@ export function App() {
 
   return (
     <ToastProvider>
-      <main className="flex min-h-screen items-center justify-center">
+      <main className="flex min-h-dvh w-full items-center justify-center sm:min-h-screen">
         <LoginCard stat={_status} onLogout={resetToLogin} onProfileReady={profileReady}></LoginCard>
       </main>
     </ToastProvider>

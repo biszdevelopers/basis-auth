@@ -507,6 +507,7 @@ export function createApp(
       }
       return c.redirect(redirectTo, 302);
     } catch (error: any) {
+      console.log(error)
       log.error(error, "Microsoft upstream begin failed");
       
       return frontendFlowError(c, "Upstream Error");

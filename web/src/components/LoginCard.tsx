@@ -157,20 +157,22 @@ export function LoginCard({
     }, [stat]);
 
     return (
-        <Card className="relative h-80 w-80 m-auto">
+        <Card className="relative m-0 h-dvh w-full overflow-y-auto rounded-none shadow-none ring-0 sm:m-auto sm:h-80 sm:w-80 sm:overflow-hidden sm:rounded-2xl sm:shadow-md sm:ring-1">
             <Fade show={stat.loading} onExited={loadingFinishedExiting}>
                 <Spinner
                     className="absolute top-1/2 left-1/2 size-6 -translate-x-1/2 -translate-y-1/2"
                 />
             </Fade>
-            <div data-testid="main-content" className={cn("flex flex-col justify-between h-full transition-opacity duration-300", (!stat.loading && loadingExited && (stat.page == "content" || stat.page == "login" || stat.page == "consent")) ? "opacity-100" : "pointer-events-none opacity-0", hold && "pointer-events-none")}>
-                <CardHeader className="flex-1">
-                    <Label className="font-mono text-devconnect glow flicker">DevConnect</Label>
+            <div data-testid="main-content" className={cn("sm:flex flex-col justify-between h-full transition-opacity duration-300", (!stat.loading && loadingExited && (stat.page == "content" || stat.page == "login" || stat.page == "consent")) ? "opacity-100" : "pointer-events-none opacity-0", hold && "pointer-events-none")}>
+                <CardHeader className="flex-1 px-0 sm:px-(--card-spacing)">
+                    <Label className="font-mono text-devconnect glow flicker px-(--card-spacing) sm:px-0">DevConnect</Label>
+                    <Separator className="m-0 mt-4 sm:hidden" />
                 </CardHeader>
+
                 <CardContent className="flex-8 ">
                     {stat.error && (
 
-                        <div className="flex flex-col justify-start gap-2">
+                        <div className="flex flex-col justify-start gap-2 mt-4 sm:mt-0">
                             <div className="flex flex-row items-center gap-2">
                                 <CircleAlert id="err-icon" className="size-5 text-destructive [&_circle]:fill-current [&_line]:stroke-card" />
                                 <Label htmlFor="err-icon" className="bold text-xl">Unable to Login</Label>
@@ -184,7 +186,7 @@ export function LoginCard({
                         </div>
                     )}
                     {stat.page == "login" && (
-                        <div className="flex flex-col gap-2 justify-between">
+                        <div className="flex flex-col gap-2 justify-between mt-4 sm:mt-0">
 
                         <Label className="mt-2">Sign in to<Label className="text-devconnect">{stat.login?.client.name}</Label></Label>
                         <Label className="text-muted-foreground">with the only method below</Label>
@@ -197,10 +199,10 @@ export function LoginCard({
                             <Building className="size-4 text-muted-foreground mr-1" />
                             {firstPartyOnly ? <><Label className="text-muted-foreground text-xs">A&nbsp;</Label>
                             <HoverCard openDelay={200} closeDelay={200}>
-                                <HoverCardTrigger>
-                                    <div className="flex gap-2 items-center text-muted-foreground">
+                                <HoverCardTrigger asChild>
+                                    <button type="button" className="flex items-center gap-2 text-muted-foreground">
                                         <Label className="text-xs text-primary">BASIS Organization</Label>
-                                    </div>
+                                    </button>
                                 </HoverCardTrigger>
                                 <HoverCardContent>
                                     <Label>Must be one of the following:</Label>
@@ -223,16 +225,21 @@ export function LoginCard({
                     )}
 
                     {stat.page == "consent" && (
-                        <div className="flex flex-col gap-2 mt-2">
-                            <Profile disabled={hold === "logout" || hold === "consent"} onLogout={logout} onReady={onProfileReady} />
-                            <Label className="mt-2">Allow <Label className="text-devconnect">{stat.login?.client.name}</Label> to...</Label>
+                        <div className="flex flex-col gap-2 mt-8 sm:mt-2">
+                            <Profile
+                                size="responsive"
+                                disabled={hold === "logout" || hold === "consent"}
+                                onLogout={logout}
+                                onReady={onProfileReady}
+                            />
+                            <Label className="mt-8 sm:mt-2">Allow <Label className="text-devconnect">{stat.login?.client.name}</Label> to...</Label>
                             <ul className="space-y-1">
                             {visibleScopes.map(scopeItem)}
                             {hiddenScopes.length > 0 && (
                                 <li>
                                     <HoverCard openDelay={10} closeDelay={200}>
-                                        <HoverCardTrigger>
-                                            <button className="text-devconnect hover:underline">+{hiddenScopes.length} more...</button>
+                                    <HoverCardTrigger asChild>
+                                        <button type="button" className="text-devconnect hover:underline">+{hiddenScopes.length} more...</button>
                                         </HoverCardTrigger>
                                         <HoverCardContent className="w-80">
                                             <ul className="space-y-2">
@@ -254,7 +261,7 @@ export function LoginCard({
                     
                 </CardContent>
 
-                <CardFooter className="flex-1 items-center justify-between">
+                <CardFooter className="flex-1 items-center justify-between mt-8">
                         
                     
 
@@ -265,11 +272,14 @@ export function LoginCard({
                     
 
                     <HoverCard openDelay={200} closeDelay={200}>
-                        <HoverCardTrigger>
-                            <div className="flex gap-2 items-center text-muted-foreground">
+                        <HoverCardTrigger asChild>
+                            <button
+                                type="button"
+                                className="flex cursor-pointer items-center gap-2 text-muted-foreground"
+                            >
                                 <CircleQuestionMark className="size-3"></CircleQuestionMark>
                                 <Label className="text-xs">Why am I here?</Label>
-                            </div>
+                            </button>
                         </HoverCardTrigger>
                         <HoverCardContent className="flex flex-col gap-4">
                             <p>
