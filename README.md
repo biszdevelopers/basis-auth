@@ -84,6 +84,10 @@ A typical authorization request is:
 
 Each client can restrict Microsoft accounts with `filterMode` and `filterContent` in `OIDC_CLIENTS_JSON`. Set `filterMode` to `"whitelist"` to allow only the normalized Microsoft email/unique names in `filterContent`, or `"blacklist"` to reject those names. Leave the mode as `null` with an empty list to allow all accounts. Administrators can also set `users.disabled` to block an account across every client; blocked sign-ins return to the authorization page with an error.
 
+Each client also declares a non-empty `loginTypes` array containing `FIRST_PARTY`, `THIRD_PARTY`, and/or `COMMON`. `COMMON` selects Microsoft's `/common` authority, otherwise `THIRD_PARTY` selects `/organizations`, and a first-party-only client uses the configured BASIS tenant. After callback, the resolved email-domain classification must be present in the client's array. Omitting this field defaults to `FIRST_PARTY` for compatibility.
+
+Accepted email-domain policies and their suffixes are stored in PostgreSQL. `basis-global.com` and `basischina.com` initially share the BASIS first-party tenant policy. Unmapped addresses are classified as `COMMON`; changing an email or signing in again refreshes the user's stored suffix reference.
+
 Manage clients with the interactive TUI (numbered pickers, validated prompts, no flags needed):
 
 ```bash
@@ -92,7 +96,7 @@ bun run clients:add      # add-client walkthrough
 bun run clients:remove   # pick a client from a numbered list
 ```
 
-Adding walks through name, type (confidential/public), redirect URIs, one dedicated resource, scopes, a JSON permission object mapping names to descriptions, consent, and optional account filters. For confidential clients, leave the secret blank to auto-generate a `sk-...` secret; it is printed once (PostgreSQL stores only a scrypt hash, so copy it then). Editing keeps the existing secret and owners unless you rotate or change the client type; a rotated secret is likewise shown once. Passing a JSON definition without `clientId` still works non-interactively and also auto-generates a missing secret:
+Adding walks through name, type (confidential/public), redirect URIs, one dedicated resource, scopes, a JSON permission object mapping names to descriptions, consent, login types, and optional account filters. For confidential clients, leave the secret blank to auto-generate a `sk-...` secret; it is printed once (PostgreSQL stores only a scrypt hash, so copy it then). Editing keeps the existing secret and owners unless you rotate or change the client type; a rotated secret is likewise shown once. Passing a JSON definition without `clientId` still works non-interactively and also auto-generates a missing secret:
 
 ```bash
 bun run clients:add -- '{"name":"Example","redirectUris":["https://example.test/callback"],"public":false,"resources":["urn:basis:api:example"]}'

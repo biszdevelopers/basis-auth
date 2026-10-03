@@ -7,7 +7,6 @@ const user = {
   id: "d2c3f635-527c-4c0a-bc1c-15d6af3f0946",
   provider: "microsoft",
   email: "person@example.test",
-  emailVerified: true,
   studentId: null,
   schoolDistrict: null,
   disabled: false,

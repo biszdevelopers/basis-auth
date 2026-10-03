@@ -1,14 +1,15 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { BootstrapPermissionGrant } from "./config.js";
 import type { Database } from "./database/client.js";
-import { userPermissions, users } from "./database/schema.js";
+import type { EmailDomainService } from "./database/emailDomains.js";
+import { acceptedEmailDomains, emailDomainSuffixes, userPermissions, users } from "./database/schema.js";
+import { loginTypeFor } from "./loginTypes.js";
 
 export interface UpstreamIdentity {
   provider: string;
   issuer: string;
   subject: string;
   email: string;
-  emailVerified: boolean;
   displayName?: string;
   picture?: { data: Buffer; contentType: string };
 }
@@ -16,13 +17,6 @@ export interface UpstreamIdentity {
 export interface BasisStudentDetails {
   studentId: string | null;
   schoolDistrict: string | null;
-}
-
-const verifiedEmailDomains = new Set(["basischina.com", "basis-global.com"]);
-
-export function isVerifiedBasisEmail(email: string): boolean {
-  const domain = email.trim().toLowerCase().match(/^[^@\s]+@([^@\s]+)$/)?.[1];
-  return Boolean(domain && verifiedEmailDomains.has(domain));
 }
 
 /**
@@ -43,6 +37,7 @@ export function deriveBasisStudentDetails(email: string): BasisStudentDetails {
 
 export function createIdentityService(
   db: Database,
+  emailDomains: EmailDomainService,
   defaultPermission: string,
   bootstrapGrants: BootstrapPermissionGrant[],
 ) {
@@ -56,6 +51,7 @@ export function createIdentityService(
 
   async function upsertFromMicrosoft(identity: UpstreamIdentity) {
     const normalizedEmail = identity.email.trim().toLowerCase();
+    const emailDomain = await emailDomains.resolveEmail(normalizedEmail);
     const { studentId, schoolDistrict } = deriveBasisStudentDetails(normalizedEmail);
     const [existing] = await db
       .select()
@@ -78,7 +74,7 @@ export function createIdentityService(
         upstreamIssuer: identity.issuer,
         upstreamSubject: identity.subject,
         email: normalizedEmail,
-        emailVerified: identity.emailVerified,
+        emailSuffixId: emailDomain?.suffixId,
         studentId,
         schoolDistrict,
         displayName: identity.displayName,
@@ -90,7 +86,7 @@ export function createIdentityService(
         set: {
           provider: identity.provider,
           email: normalizedEmail,
-          emailVerified: identity.emailVerified,
+          emailSuffixId: emailDomain?.suffixId ?? null,
           studentId,
           schoolDistrict,
           displayName: identity.displayName,
@@ -129,7 +125,7 @@ export function createIdentityService(
               }
             : {}),
           ...(scopes.has("email")
-            ? { email: user.email, email_verified: user.emailVerified }
+            ? { email: user.email }
             : {}),
         };
       },
@@ -143,6 +139,16 @@ export function createIdentityService(
   async function findUser(userId: string) {
     const [user] = await db.select().from(users).where(eq(users.id, userId)).limit(1);
     return user;
+  }
+
+  async function loginTypeForUser(userId: string) {
+    const [row] = await db.select({ firstParty: acceptedEmailDomains.firstParty })
+      .from(users)
+      .leftJoin(emailDomainSuffixes, eq(users.emailSuffixId, emailDomainSuffixes.id))
+      .leftJoin(acceptedEmailDomains, eq(emailDomainSuffixes.acceptedEmailDomainId, acceptedEmailDomains.id))
+      .where(eq(users.id, userId))
+      .limit(1);
+    return row ? loginTypeFor(row.firstParty) : undefined;
   }
 
   const findUserCompactStmt = db
@@ -161,7 +167,9 @@ export function createIdentityService(
     return user;
   }
 
-  return { upsertFromMicrosoft, findAccount, permissionsFor, findUsersByIds, findUser, findUserCompact };
+  return {
+    upsertFromMicrosoft, findAccount, permissionsFor, findUsersByIds, findUser, findUserCompact, loginTypeForUser,
+  };
 }
 
 export type IdentityService = ReturnType<typeof createIdentityService>;

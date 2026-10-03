@@ -82,6 +82,7 @@ export async function seedConfiguration(
         requireConsent: client.requireConsent,
         filterMode: client.filterMode,
         filterContent: client.filterContent,
+        loginTypes: client.loginTypes,
       })
       .onConflictDoUpdate({
         target: oidcClients.clientId,
@@ -92,6 +93,7 @@ export async function seedConfiguration(
           requireConsent: client.requireConsent,
           filterMode: client.filterMode,
           filterContent: client.filterContent,
+          loginTypes: client.loginTypes,
           updatedAt: new Date(),
         },
       });

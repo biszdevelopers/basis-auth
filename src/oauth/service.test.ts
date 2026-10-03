@@ -56,6 +56,7 @@ describe("client lookup", () => {
     requireConsent: false,
     filterMode: null,
     filterContent: ["allowed@example.test"],
+    loginTypes: ["FIRST_PARTY"],
     metadata: {
       name: "Portal",
       owners: [{ id: "c6ba1588-03bb-4c61-a4e1-3c7c82e919b5", role: "role.ADMIN" }],
@@ -89,7 +90,11 @@ describe("client lookup", () => {
   );
 
   it("returns only the id and name to the frontend", async () => {
-    await expect(service.getClient("client-1")).resolves.toEqual({ id: "client-1", name: "Portal" });
+    await expect(service.getClient("client-1")).resolves.toEqual({
+      id: "client-1",
+      name: "Portal",
+      loginTypes: ["FIRST_PARTY"],
+    });
   });
 
   it("serves repeated lookups from the in-memory cache", async () => {
@@ -116,6 +121,7 @@ describe("authorization resource check", () => {
     requireConsent: false,
     filterMode: null,
     filterContent: [],
+    loginTypes: ["FIRST_PARTY"],
     metadata: {
       name: "Portal",
       owners: [{ id: "c6ba1588-03bb-4c61-a4e1-3c7c82e919b5", role: "role.ADMIN" }],
@@ -209,6 +215,7 @@ describe("client credentials grant", () => {
       requireConsent: false,
       filterMode: null,
       filterContent: [],
+      loginTypes: ["FIRST_PARTY"],
       metadata: {
         name: "Application",
         owners: [{ id: "c6ba1588-03bb-4c61-a4e1-3c7c82e919b5", role: "role.ADMIN" }],

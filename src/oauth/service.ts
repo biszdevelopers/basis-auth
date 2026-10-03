@@ -16,6 +16,7 @@ import {
   resourceServers,
 } from "../database/schema.js";
 import type { IdentityService } from "../identity.js";
+import type { LoginType } from "../loginTypes.js";
 import { hashToken, isValidS256PkceRequest, randomToken, verifyS256Pkce } from "./crypto.js";
 import { OAuthError } from "./errors.js";
 import type { KeyService } from "./keys.js";
@@ -39,6 +40,7 @@ export interface OAuthClient {
   requireConsent: boolean;
   filterMode: "whitelist" | "blacklist" | null;
   filterContent: string[];
+  loginTypes: LoginType[];
   metadata: StoredClientMetadata;
 }
 
@@ -171,6 +173,10 @@ export function createOAuthService(
       throw new OAuthError("invalid_scope", "A requested scope is not supported by the resource", 400, 14401);
     }
 
+    const sessionLoginType = input.session ? await identity.loginTypeForUser(input.session.userId) : undefined;
+    const allowedSession = input.session && sessionLoginType && client.loginTypes.includes(sessionLoginType)
+      ? input.session
+      : undefined;
     const id = crypto.randomUUID();
     const interactionToken = randomToken(32);
     await db.insert(authorizationRequests).values({
@@ -184,8 +190,8 @@ export function createOAuthService(
       state: input.state,
       nonce: input.nonce,
       codeChallenge: input.codeChallenge!,
-      userId: input.session?.userId,
-      authenticatedAt: input.session?.authenticatedAt,
+      userId: allowedSession?.userId,
+      authenticatedAt: allowedSession?.authenticatedAt,
       expiresAt: new Date(Date.now() + 10 * 60 * 1000),
     });
     return { id, interactionToken };
@@ -233,6 +239,7 @@ export function createOAuthService(
     return {
       id: client.clientId,
       name: client.metadata.name,
+      loginTypes: client.loginTypes,
     };
   }
 

@@ -71,6 +71,13 @@
       "when": 1789050635745,
       "tag": "0009_chief_gorilla_man",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1790861014982,
+      "tag": "0010_silly_ghost_rider",
+      "breakpoints": true
     }
   ]
 }

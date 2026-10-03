@@ -3,6 +3,7 @@ import { serve } from "@hono/node-server";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { createDatabase } from "./database/client.js";
+import { createEmailDomainService } from "./database/emailDomains.js";
 import { migrateDatabase } from "./database/migrate.js";
 import { seedConfiguration } from "./database/seed.js";
 import { createIdentityService } from "./identity.js";
@@ -17,16 +18,18 @@ const config = await loadConfig();
 await migrateDatabase(config.databaseUrl);
 const { db, pool } = createDatabase(config.databaseUrl);
 await seedConfiguration(db, config.clients, config.resources);
+const emailDomains = createEmailDomainService(db);
 const identity = createIdentityService(
   db,
+  emailDomains,
   config.defaultPermission,
   config.bootstrapPermissionGrants,
 );
 const keys = await createKeyService(config, identity);
 const sessions = createSessionService(db);
 const oauth = createOAuthService(config, db, keys, identity);
-const microsoft = createMicrosoftService(config, db, identity);
-const internalUsers = createInternalUserService(db);
+const microsoft = createMicrosoftService(config, db, identity, emailDomains);
+const internalUsers = createInternalUserService(db, emailDomains);
 const app = createApp(config, oauth, keys, sessions, identity, microsoft);
 const internalApp = createInternalApp(config.internalApiToken, internalUsers);
 

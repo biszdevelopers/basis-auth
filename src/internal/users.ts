@@ -1,9 +1,10 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
 import type { Database } from "../database/client.js";
+import type { EmailDomainService } from "../database/emailDomains.js";
 import { authSessions, refreshTokens, users } from "../database/schema.js";
-import { deriveBasisStudentDetails, isVerifiedBasisEmail } from "../identity.js";
+import { deriveBasisStudentDetails } from "../identity.js";
 
-const allowedFields = new Set(["displayName", "email", "emailVerified", "disabled", "picture"]);
+const allowedFields = new Set(["displayName", "email", "disabled", "picture"]);
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const contentTypePattern = /^image\/[a-z0-9][a-z0-9.+-]*$/i;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -16,7 +17,6 @@ interface PictureInput {
 interface UserPatch {
   displayName?: string | null;
   email?: string;
-  emailVerified?: boolean;
   disabled?: boolean;
   picture?: PictureInput | null;
 }
@@ -58,12 +58,6 @@ function parsePatch(input: unknown): UserPatch {
       throw new InternalUserError("email must be a valid email address", 400, "invalid_request");
     }
     patch.email = body.email.trim().toLowerCase();
-  }
-  if ("emailVerified" in body) {
-    if (typeof body.emailVerified !== "boolean") {
-      throw new InternalUserError("emailVerified must be a boolean", 400, "invalid_request");
-    }
-    patch.emailVerified = body.emailVerified;
   }
   if ("disabled" in body) {
     if (typeof body.disabled !== "boolean") {
@@ -108,7 +102,7 @@ function validateUserId(userId: string) {
   if (!uuidPattern.test(userId)) throw new InternalUserError("User ID is invalid", 400, "invalid_request");
 }
 
-export function createInternalUserService(db: Database) {
+export function createInternalUserService(db: Database, emailDomains: EmailDomainService) {
   async function findUser(userId: string) {
     validateUserId(userId);
     const [user] = await db
@@ -116,7 +110,7 @@ export function createInternalUserService(db: Database) {
         id: users.id,
         provider: users.provider,
         email: users.email,
-        emailVerified: users.emailVerified,
+        emailSuffixId: users.emailSuffixId,
         studentId: users.studentId,
         schoolDistrict: users.schoolDistrict,
         disabled: users.disabled,
@@ -149,12 +143,11 @@ export function createInternalUserService(db: Database) {
     if (patch.displayName !== undefined) values.displayName = patch.displayName;
     if (patch.email !== undefined) {
       values.email = patch.email;
+      values.emailSuffixId = (await emailDomains.resolveEmail(patch.email))?.suffixId ?? null;
       const { studentId, schoolDistrict } = deriveBasisStudentDetails(patch.email);
       values.studentId = studentId;
       values.schoolDistrict = schoolDistrict;
-      values.emailVerified = isVerifiedBasisEmail(patch.email);
     }
-    if (patch.emailVerified !== undefined && patch.email === undefined) values.emailVerified = patch.emailVerified;
     if (patch.disabled !== undefined) values.disabled = patch.disabled;
     if (patch.picture !== undefined) {
       values.picture = patch.picture ? Buffer.from(patch.picture.data, "base64") : null;

@@ -212,7 +212,7 @@ export function createApp(
     id_token_signing_alg_values_supported: ["RS256"],
     token_endpoint_auth_methods_supported: ["client_secret_basic", "client_secret_post", "none"],
     scopes_supported: ["openid", "profile", "email", "offline_access"],
-    claims_supported: ["sub", "name", "picture", "email", "email_verified"],
+    claims_supported: ["sub", "name", "picture", "email"],
     code_challenge_methods_supported: ["S256"],
   };
   const oauthAuthorizationServerConfiguration = {
@@ -346,7 +346,6 @@ export function createApp(
       provider: user.provider,
       name: user.displayName,
       email: user.email,
-      emailVerified: user.emailVerified,
       loginExpiresAt: session.expiresAt.toISOString(),
       picture: user.picture && user.pictureContentType ? `/api/picture/${user.id}` : null,
     });
@@ -500,9 +499,9 @@ export function createApp(
     try {
       const uid = c.req.query("uid");
       if (!uid) throw new OAuthError("invalid_request", "Interaction is not found or expired");
-      const { request } = await oauth.interaction(uid, getCookie(c, INTERACTION_COOKIE));
+      const { request, client } = await oauth.interaction(uid, getCookie(c, INTERACTION_COOKIE));
       if (request.userId) throw new OAuthError("invalid_request", "User is already authenticated");
-      const redirectTo = (await microsoft.begin(request.id)).href;
+      const redirectTo = (await microsoft.begin(request.id, client.loginTypes)).href;
       if (c.req.header("accept")?.includes("application/json")) {
         return c.json({ redirectTo });
       }
@@ -528,6 +527,7 @@ export function createApp(
       const matchesFilter = filterContent.has(filteredEmail);
       if (
         result.user.disabled ||
+        !client.loginTypes.includes(result.loginType) ||
         (client?.filterMode === "whitelist" && !matchesFilter) ||
         (client?.filterMode === "blacklist" && matchesFilter)
       ) {

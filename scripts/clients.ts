@@ -17,6 +17,7 @@ import {
   type StoredClientMetadata,
 } from "../src/database/seed.js";
 import { oidcClients, resourceServers } from "../src/database/schema.js";
+import { loginTypes, type LoginType } from "../src/loginTypes.js";
 
 // ponytail: stdlib readline TUI; no prompt dependency.
 // Runtime visibility (see src/oauth/service.ts, src/oauth/clientCache.ts):
@@ -73,6 +74,7 @@ export interface ListedClient {
   redirectUris: string[];
   resources: string[];
   permissionDefinitionCount: number;
+  loginTypes: LoginType[];
 }
 
 export async function listClients(db: Database): Promise<ListedClient[]> {
@@ -87,6 +89,7 @@ export async function listClients(db: Database): Promise<ListedClient[]> {
         redirectUris: metadata.redirectUris ?? [],
         resources: row.resources ?? [],
         permissionDefinitionCount: Object.keys(metadata.permissions ?? {}).length,
+        loginTypes: row.loginTypes,
       };
     })
     .sort((a, b) => a.name.localeCompare(b.name));
@@ -111,6 +114,7 @@ export function printClients(clients: ListedClient[], known: Set<string>): void 
     if (client.redirectUris.length) process.stdout.write(`   redirects: ${client.redirectUris.join(", ")}\n`);
     if (client.resources.length) process.stdout.write(`   resources: ${client.resources.join(", ")}\n`);
     process.stdout.write(`   permission definitions: ${client.permissionDefinitionCount}\n`);
+    process.stdout.write(`   login types: ${client.loginTypes.join(", ")}\n`);
     const missing = client.resources.filter((audience) => !known.has(audience));
     if (missing.length) {
       process.stdout.write(
@@ -201,6 +205,18 @@ async function promptFilterMode(rl: Interface, initial: string): Promise<"whitel
   }
 }
 
+async function promptLoginTypes(rl: Interface, initial: LoginType[]): Promise<LoginType[]> {
+  for (;;) {
+    const values = splitList(await ask(rl, "Login types (comma-separated)", initial.join(", ")))
+      .map((value) => value.toUpperCase());
+    const invalid = values.filter((value) => !loginTypes.includes(value as LoginType));
+    if (!values.length) process.stdout.write("At least one login type is required.\n");
+    else if (invalid.length) process.stdout.write(`Invalid login type(s): ${invalid.join(", ")}\n`);
+    else if (new Set(values).size !== values.length) process.stdout.write("Login types must be unique.\n");
+    else return values as LoginType[];
+  }
+}
+
 async function promptMissingResourceScopes(
   rl: Interface,
   resources: string[],
@@ -225,12 +241,14 @@ function printClientSummary(input: {
   requireConsent: boolean;
   filterMode: "whitelist" | "blacklist" | null;
   filterContent: string[];
+  loginTypes: LoginType[];
 }): void {
   process.stdout.write(
     `\nName: ${input.name ?? "(none)"}\nType: ${input.public ? "public" : "confidential"}\n` +
       `Redirects: ${input.redirectUris.join(", ")}\nResources: ${input.resources.join(", ")}\n` +
       `Scopes: ${input.scopes.join(", ")}\nConsent: ${input.requireConsent ? "shown" : "skipped"}\n` +
       `Permission definitions: ${Object.keys(input.permissions).length}\n` +
+      `Login types: ${input.loginTypes.join(", ")}\n` +
       `Filter: ${input.filterMode ?? "none"}${input.filterContent.length ? ` (${input.filterContent.join(", ")})` : ""}\n`,
   );
 }
@@ -264,6 +282,7 @@ export async function promptNewClient(rl: Interface, audiences: string[]): Promi
   const requireConsent = await askYesNo(rl, "Show consent screen?", true);
   const filterMode = await promptFilterMode(rl, "");
   const filterContent = filterMode ? splitList(await ask(rl, "Filter emails (comma-separated)")) : [];
+  const selectedLoginTypes = await promptLoginTypes(rl, ["FIRST_PARTY"]);
 
   const input = clientInputSchema.parse({
     ...(name ? { name } : {}),
@@ -276,6 +295,7 @@ export async function promptNewClient(rl: Interface, audiences: string[]): Promi
     requireConsent,
     filterMode,
     filterContent,
+    loginTypes: selectedLoginTypes,
   });
 
   printClientSummary(input);
@@ -365,6 +385,7 @@ export interface ClientDetail {
   filterMode: "whitelist" | "blacklist" | null;
   filterContent: string[];
   owners: ClientOwner[];
+  loginTypes: LoginType[];
 }
 
 export async function getClientDetail(db: Database, clientId: string): Promise<ClientDetail> {
@@ -384,6 +405,7 @@ export async function getClientDetail(db: Database, clientId: string): Promise<C
     filterMode: row.filterMode ?? null,
     filterContent: row.filterContent ?? [],
     owners: metadata.owners ?? [],
+    loginTypes: row.loginTypes,
   };
 }
 
@@ -398,6 +420,7 @@ export interface EditedClient {
   requireConsent: boolean;
   filterMode: "whitelist" | "blacklist" | null;
   filterContent: string[];
+  loginTypes: LoginType[];
   resourceScopes: Map<string, string[]>;
 }
 
@@ -440,6 +463,7 @@ export async function promptEditClient(
   const filterMode = await promptFilterMode(rl, current.filterMode ?? "");
   const filterDefault = filterMode === current.filterMode ? current.filterContent.join(", ") : "";
   const filterContent = filterMode ? splitList(await ask(rl, "Filter emails (comma-separated)", filterDefault)) : [];
+  const selectedLoginTypes = await promptLoginTypes(rl, current.loginTypes);
 
   const input = clientInputSchema.parse({
     name,
@@ -452,6 +476,7 @@ export async function promptEditClient(
     requireConsent,
     filterMode,
     filterContent,
+    loginTypes: selectedLoginTypes,
   });
 
   printClientSummary(input);
@@ -496,6 +521,7 @@ export async function applyClientEdit(db: Database, clientId: string, edit: Edit
       requireConsent: edit.requireConsent,
       filterMode: edit.filterMode,
       filterContent: edit.filterContent,
+      loginTypes: edit.loginTypes,
       updatedAt: new Date(),
     })
     .where(eq(oidcClients.clientId, clientId));

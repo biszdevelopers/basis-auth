@@ -1,9 +1,11 @@
 import { beforeAll, afterAll, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import { loadConfig, type AppConfig } from "../config.js";
 import { createDatabase, type Database } from "../database/client.js";
 import { migrateDatabase } from "../database/migrate.js";
 import { seedConfiguration } from "../database/seed.js";
-import { oidcClients } from "../database/schema.js";
+import { createEmailDomainService } from "../database/emailDomains.js";
+import { acceptedEmailDomains, emailDomainSuffixes, oidcClients, users } from "../database/schema.js";
 import { createIdentityService, type IdentityService } from "../identity.js";
 import { createKeyService, type KeyService } from "./keys.js";
 import { createOAuthService, type OAuthService } from "./service.js";
@@ -18,6 +20,7 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
   let identity: IdentityService;
   let keys: KeyService;
   let oauth: OAuthService;
+  let emailDomains: ReturnType<typeof createEmailDomainService>;
 
   const databaseUrl = process.env.DATABASE_URL!;
 
@@ -40,6 +43,7 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
           permissions: { "nethack.Projects.read.all": "View all projects" },
           resources: ["urn:basis:api:projects"],
           requireConsent: false,
+          loginTypes: ["COMMON"],
         },
       ]),
     });
@@ -48,7 +52,8 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
     db = database.db;
     close = () => database.pool.end();
     await seedConfiguration(db, config.clients, config.resources);
-    identity = createIdentityService(db, "participant", []);
+    emailDomains = createEmailDomainService(db);
+    identity = createIdentityService(db, emailDomains, "participant", []);
     keys = await createKeyService(config, identity);
     oauth = createOAuthService(config, db, keys, identity);
   }, 120_000);
@@ -71,13 +76,48 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
     });
   });
 
+  it("seeds domains and clears user links when a suffix is deleted", async () => {
+    const policies = await db.select().from(acceptedEmailDomains);
+    const suffixes = await db.select().from(emailDomainSuffixes);
+    expect(policies).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        organizationId: "cbc6e1e2-a6bb-4002-bbdc-6da892a051a7",
+        firstParty: true,
+      }),
+    ]));
+    expect(suffixes.map((row) => row.suffix)).toEqual(expect.arrayContaining([
+      "basis-global.com",
+      "basischina.com",
+    ]));
+
+    const marker = crypto.randomUUID();
+    const policy = await emailDomains.createPolicy({ organizationId: crypto.randomUUID(), firstParty: false });
+    const suffix = await emailDomains.createSuffix({
+      suffix: `${marker}.example.com`,
+      acceptedEmailDomainId: policy.id,
+    });
+    await expect(emailDomains.getSuffix(suffix.id)).resolves.toMatchObject({ suffix: `${marker}.example.com` });
+    await emailDomains.updateSuffix(suffix.id, { suffix: `${marker}.example.org` });
+    const user = await identity.upsertFromMicrosoft({
+      provider: "integration-microsoft",
+      issuer: "https://login.microsoftonline.com/organizations/v2.0",
+      subject: marker,
+      email: `person@${marker}.example.org`,
+    });
+    expect(user.emailSuffixId).toBe(suffix.id);
+
+    await emailDomains.deleteSuffix(suffix.id);
+    const [updated] = await db.select({ emailSuffixId: users.emailSuffixId }).from(users).where(eq(users.id, user.id));
+    expect(updated?.emailSuffixId).toBeNull();
+    await emailDomains.deletePolicy(policy.id);
+  });
+
   it("issues audience-bound tokens, rejects code replay, and detects refresh reuse", async () => {
     const user = await identity.upsertFromMicrosoft({
       provider: "basischina-microsoft",
       issuer: "https://login.microsoftonline.com/tenant/v2.0",
       subject: "microsoft-subject",
       email: "user@example.edu",
-      emailVerified: true,
       displayName: "Example User",
     });
     const verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";

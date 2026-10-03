@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { ArrowRight, Check, CircleAlert, CircleQuestionMark, ExternalLink } from "lucide-react";
+import { ArrowRight, Building, Check, CircleAlert, CircleQuestionMark, ExternalLink } from "lucide-react";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "./ui/card";
 import { Spinner } from "./ui/spinner";
 import { Fade } from "./ui/fade";
@@ -30,7 +30,7 @@ export interface Status {
 export interface AuthorizeSession {
       uid: string;
       prompt: "login" | "consent";
-      client: any,
+      client: { id: string; name: string; loginTypes: ("FIRST_PARTY" | "THIRD_PARTY" | "COMMON")[] },
       scopes: string[],
       resources: string[],
       accountId: string,
@@ -54,6 +54,9 @@ export function LoginCard({
     const scopes = describeScopes(stat.login?.scopes ?? []);
     const visibleScopes = scopes.length > 3 ? scopes.slice(0, 2) : scopes;
     const hiddenScopes = scopes.length > 3 ? scopes.slice(2) : [];
+    const allowedLoginTypes = stat.login?.client.loginTypes ?? ["FIRST_PARTY"];
+    const allowsCommon = allowedLoginTypes.includes("COMMON");
+    const firstPartyOnly = allowedLoginTypes.length === 1 && allowedLoginTypes[0] === "FIRST_PARTY";
 
     const scopeItem = (scope: ScopeDescription) => (
         <li key={scope.scope} className={cn(" text-foreground flex items-center gap-2")}>
@@ -190,8 +193,9 @@ export function LoginCard({
                             {hold !== "microsoft" ? <><MicrosoftLogo className="size-4" />
                             Microsoft</> : <Spinner></Spinner>}
                         </Button>
-                        <div className="flex">
-                            <Label className="text-muted-foreground text-xs">A&nbsp;</Label>
+                        <div className="flex flex-row items-center mt-1">
+                            <Building className="size-4 text-muted-foreground mr-1" />
+                            {firstPartyOnly ? <><Label className="text-muted-foreground text-xs">A&nbsp;</Label>
                             <HoverCard openDelay={200} closeDelay={200}>
                                 <HoverCardTrigger>
                                     <div className="flex gap-2 items-center text-muted-foreground">
@@ -206,7 +210,12 @@ export function LoginCard({
                                     </div>
                                 </HoverCardContent>
                             </HoverCard>
-                            <Label className="text-muted-foreground text-xs">&nbsp;account is required.</Label>
+                            <Label className="text-muted-foreground text-xs">&nbsp;account is required.</Label></> :
+                            <Label className="text-muted-foreground text-xs">
+                                {allowsCommon
+                                    ? "Personal and organizational Microsoft accounts are accepted."
+                                    : "An organizational Microsoft account is required."}
+                            </Label>}
                         </div>
                     <Label className="text-muted-foreground text-xs">You will be redirected back to DevConnect after completing Microsoft Login.</Label>
                         </div>

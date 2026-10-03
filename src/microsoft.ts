@@ -3,8 +3,10 @@ import { toPng } from "jdenticon";
 import * as client from "openid-client";
 import type { AppConfig } from "./config.js";
 import type { Database } from "./database/client.js";
+import type { EmailDomainService } from "./database/emailDomains.js";
 import { upstreamAuthRequests } from "./database/schema.js";
-import { isVerifiedBasisEmail, type IdentityService } from "./identity.js";
+import type { IdentityService } from "./identity.js";
+import { microsoftAuthorityFor, type LoginType } from "./loginTypes.js";
 
 const MICROSOFT_SCOPE = "openid profile email User.Read";
 
@@ -36,21 +38,29 @@ export function createMicrosoftService(
   appConfig: AppConfig,
   db: Database,
   identity: IdentityService,
+  emailDomains: EmailDomainService,
 ) {
-  let discovered: Promise<client.Configuration> | undefined;
+  const discovered = new Map<string, Promise<client.Configuration>>();
 
-  function microsoftConfig() {
+  function microsoftConfig(authority: string) {
     if (!appConfig.microsoft) throw new Error("Microsoft login is not configured");
-    discovered ??= client.discovery(
-      new URL(appConfig.microsoft.issuer),
+    const issuer = new URL(`/${authority}`, new URL(appConfig.microsoft.issuer).origin);
+    let configuration = discovered.get(authority);
+    configuration ??= client.discovery(
+      issuer,
       appConfig.microsoft.clientId,
       appConfig.microsoft.clientSecret,
     );
-    return discovered;
+    discovered.set(authority, configuration);
+    return configuration;
   }
 
-  async function begin(authorizationRequestId: string) {
-    const configuration = await microsoftConfig();
+  async function begin(authorizationRequestId: string, allowedLoginTypes: LoginType[]) {
+    const firstPartyOrganizationId = allowedLoginTypes.includes("COMMON") || allowedLoginTypes.includes("THIRD_PARTY")
+      ? ""
+      : await emailDomains.firstPartyOrganizationId();
+    const authority = microsoftAuthorityFor(allowedLoginTypes, firstPartyOrganizationId);
+    const configuration = await microsoftConfig(authority);
     const state = client.randomState();
     const nonce = client.randomNonce();
     const codeVerifier = client.randomPKCECodeVerifier();
@@ -60,6 +70,7 @@ export function createMicrosoftService(
       authorizationRequestId,
       codeVerifier,
       nonce,
+      microsoftAuthority: authority,
       expiresAt: new Date(Date.now() + 10 * 60 * 1000),
     });
     return client.buildAuthorizationUrl(configuration, {
@@ -87,7 +98,8 @@ export function createMicrosoftService(
       .returning();
     if (!request) throw new Error("Microsoft login request is invalid or expired");
 
-    const configuration = await microsoftConfig();
+    if (!request.microsoftAuthority) throw new Error("Microsoft login request has no authority");
+    const configuration = await microsoftConfig(request.microsoftAuthority);
     const tokens = await client.authorizationCodeGrant(configuration, currentUrl, {
       pkceCodeVerifier: request.codeVerifier,
       expectedState: state,
@@ -108,7 +120,6 @@ export function createMicrosoftService(
       issuer: claims.iss,
       subject: claims.sub,
       email: emailValue,
-      emailVerified: isVerifiedBasisEmail(emailValue),
       displayName:
         typeof userInfo.name === "string"
           ? userInfo.name
@@ -122,7 +133,9 @@ export function createMicrosoftService(
         claims.sub,
       ),
     });
-    return { authorizationRequestId: request.authorizationRequestId, user };
+    const loginType = await identity.loginTypeForUser(user.id);
+    if (!loginType) throw new Error("Microsoft user classification could not be resolved");
+    return { authorizationRequestId: request.authorizationRequestId, user, loginType };
   }
 
   return { begin, callback };

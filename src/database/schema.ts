@@ -12,9 +12,36 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
+import type { LoginType } from "../loginTypes.js";
 
 const bytea = customType<{ data: Buffer; driverData: Buffer }>({
   dataType: () => "bytea",
+});
+
+export const acceptedEmailDomains = pgTable(
+  "accepted_email_domains",
+  {
+    id: uuid("id").primaryKey(),
+    organizationId: uuid("organization_id").notNull().unique(),
+    firstParty: boolean("first_party").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("accepted_email_domains_one_first_party")
+      .on(table.firstParty)
+      .where(sql`${table.firstParty} = true`),
+  ],
+);
+
+export const emailDomainSuffixes = pgTable("email_domain_suffixes", {
+  id: uuid("id").primaryKey(),
+  suffix: text("suffix").notNull().unique(),
+  acceptedEmailDomainId: uuid("accepted_email_domain_id")
+    .notNull()
+    .references(() => acceptedEmailDomains.id, { onDelete: "cascade" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const users = pgTable(
@@ -25,7 +52,7 @@ export const users = pgTable(
     upstreamIssuer: text("upstream_issuer").notNull(),
     upstreamSubject: text("upstream_subject").notNull(),
     email: text("email").notNull(),
-    emailVerified: boolean("email_verified").notNull().default(false),
+    emailSuffixId: uuid("email_suffix_id").references(() => emailDomainSuffixes.id, { onDelete: "set null" }),
     studentId: text("student_id"),
     schoolDistrict: text("school_district"),
     disabled: boolean("disabled").notNull().default(false),
@@ -68,12 +95,24 @@ export const oidcClients = pgTable(
     requireConsent: boolean("require_consent").notNull().default(true),
     filterMode: text("filter_mode").$type<"whitelist" | "blacklist" | null>(),
     filterContent: jsonb("filter_content").notNull().default([]).$type<string[]>(),
+    loginTypes: jsonb("login_types").notNull().default(["FIRST_PARTY"]).$type<LoginType[]>(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     check(
       "oidc_clients_filter_mode_check",
       sql`${table.filterMode} in ('whitelist', 'blacklist') or ${table.filterMode} is null`,
+    ),
+    check(
+      "oidc_clients_login_types_check",
+      sql`jsonb_typeof(${table.loginTypes}) = 'array'
+        and jsonb_array_length(${table.loginTypes}) between 1 and 3
+        and ${table.loginTypes} <@ '["FIRST_PARTY", "THIRD_PARTY", "COMMON"]'::jsonb
+        and (
+          jsonb_array_length(${table.loginTypes}) = 1
+          or (jsonb_array_length(${table.loginTypes}) = 2 and jsonb_path_match(${table.loginTypes}, '$[0] != $[1]'))
+          or (jsonb_array_length(${table.loginTypes}) = 3 and jsonb_path_match(${table.loginTypes}, '$[0] != $[1] && $[0] != $[2] && $[1] != $[2]'))
+        )`,
     ),
   ],
 );
@@ -197,6 +236,7 @@ export const upstreamAuthRequests = pgTable(
       .references(() => authorizationRequests.id, { onDelete: "cascade" }),
     codeVerifier: text("code_verifier").notNull(),
     nonce: text("nonce").notNull(),
+    microsoftAuthority: text("microsoft_authority"),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   },
   (table) => [index("upstream_auth_requests_expires_at_idx").on(table.expiresAt)],

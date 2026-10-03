@@ -268,7 +268,6 @@ describe("SSO account API", () => {
     provider: "basischina-microsoft",
     displayName: "Example User",
     email: "user@example.test",
-    emailVerified: true,
     picture: Buffer.from([137, 80, 78, 71]),
     pictureContentType: "image/png",
   };
@@ -292,7 +291,6 @@ describe("SSO account API", () => {
       provider: user.provider,
       name: user.displayName,
       email: user.email,
-      emailVerified: true,
       loginExpiresAt: loginExpiresAt.toISOString(),
       picture: `/api/picture/${user.id}`,
     });
@@ -505,7 +503,10 @@ describe("authorization interactions", () => {
 
   it("returns the Microsoft redirect URL to frontend requests", async () => {
     const oauth = {
-      interaction: vi.fn().mockResolvedValue({ request: { id: "request-id" } }),
+      interaction: vi.fn().mockResolvedValue({
+        request: { id: "request-id" },
+        client: { loginTypes: ["FIRST_PARTY"] },
+      }),
     } as unknown as OAuthService;
     const microsoft = {
       begin: vi.fn().mockResolvedValue(new URL("https://login.microsoftonline.com/authorize")),
@@ -680,7 +681,7 @@ describe("authorization interactions", () => {
     const oauth = {
       interaction: vi.fn().mockResolvedValue({
         request: { id: "request-id", initialUri: "/oauth/authorize?client_id=client&state=state" },
-        client: {},
+        client: { loginTypes: ["COMMON"] },
       }),
       attachUser: vi.fn().mockResolvedValue(undefined),
     } as unknown as OAuthService;
@@ -688,6 +689,7 @@ describe("authorization interactions", () => {
       callback: vi.fn().mockResolvedValue({
         authorizationRequestId: "request-id",
         user: { id: "user-id", email: "user@example.test", disabled: false },
+        loginType: "COMMON",
       }),
     } as unknown as MicrosoftService;
     const authorizationApp = createApp(
@@ -712,7 +714,11 @@ describe("authorization interactions", () => {
     const oauth = {
       interaction: vi.fn().mockResolvedValue({
         request: { id: "request-id" },
-        client: { filterMode: "whitelist", filterContent: ["allowed@example.test"] },
+        client: {
+          filterMode: "whitelist",
+          filterContent: ["allowed@example.test"],
+          loginTypes: ["COMMON"],
+        },
       }),
       getAuthorization: vi.fn().mockResolvedValue({ initialUri: "/oauth/authorize?client_id=client" }),
       attachUser: vi.fn(),
@@ -722,6 +728,7 @@ describe("authorization interactions", () => {
       callback: vi.fn().mockResolvedValue({
         authorizationRequestId: "request-id",
         user: { id: "user-id", email: "blocked@example.test", disabled: false },
+        loginType: "COMMON",
       }),
     } as unknown as MicrosoftService;
     const authorizationApp = createApp(

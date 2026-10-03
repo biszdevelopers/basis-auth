@@ -26,7 +26,16 @@ describe("configuration", () => {
     const config = await loadConfig(base);
     expect(config.issuer).toBe("https://auth.example.test");
     expect(config.clients[0]?.clientId).toBe("test-client");
+    expect(config.clients[0]?.loginTypes).toEqual(["FIRST_PARTY"]);
     expect(config.jwks.keys[0]?.d).toBeTypeOf("string");
+  });
+
+  it("validates non-empty, unique client login types", async () => {
+    for (const loginTypes of [[], ["COMMON", "COMMON"], ["UNKNOWN"]]) {
+      const clients = JSON.parse(base.OIDC_CLIENTS_JSON);
+      clients[0].loginTypes = loginTypes;
+      await expect(loadConfig({ ...base, OIDC_CLIENTS_JSON: JSON.stringify(clients) })).rejects.toThrow();
+    }
   });
 
   it("does not add public OIDC scopes to a client allowlist", async () => {
