@@ -225,14 +225,14 @@ export function LoginCard({
                     )}
 
                     {stat.page == "consent" && (
-                        <div className="flex flex-col gap-2 mt-8 sm:mt-2">
+                        <div className="flex flex-col gap-2 mt-6 sm:mt-2">
                             <Profile
                                 size="responsive"
                                 disabled={hold === "logout" || hold === "consent"}
                                 onLogout={logout}
                                 onReady={onProfileReady}
                             />
-                            <Label className="mt-8 sm:mt-2">Allow <Label className="text-devconnect">{stat.login?.client.name}</Label> to...</Label>
+                            <Label className="mt-4 sm:mt-2">Allow <Label className="text-devconnect">{stat.login?.client.name}</Label> to...</Label>
                             <ul className="space-y-1">
                             {visibleScopes.map(scopeItem)}
                             {hiddenScopes.length > 0 && (
