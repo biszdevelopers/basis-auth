@@ -1,0 +1,3 @@
+[submodule "docs"]
+	path = docs
+	url = ../basis-docs.git
