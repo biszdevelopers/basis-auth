@@ -20,11 +20,24 @@ export const permissionDefinitionsSchema = z
     }
   });
 
-export const clientSchema = z.object({
+export const EPHEMERAL_LOCALHOST_REDIRECT_PREFIX = "http://localhost:*";
+
+export function isEphemeralLocalhostRedirectUri(value: string): boolean {
+  if (!value.startsWith(`${EPHEMERAL_LOCALHOST_REDIRECT_PREFIX}/`)) return false;
+  const path = value.slice(EPHEMERAL_LOCALHOST_REDIRECT_PREFIX.length);
+  return !path.includes("?") && !path.includes("#");
+}
+
+const redirectUriSchema = z.string().refine(
+  (value) => isEphemeralLocalhostRedirectUri(value) || z.url().safeParse(value).success,
+  "Redirect URI must be a valid URL or an ephemeral localhost URI such as http://localhost:*/auth/callback",
+);
+
+const clientBaseSchema = z.object({
   clientId: z.string().min(1),
   name: z.string().min(1).optional(),
   clientSecret: z.string().min(16).optional(),
-  redirectUris: z.array(z.url()).min(1),
+  redirectUris: z.array(redirectUriSchema).min(1),
   public: z.boolean().default(false),
   // OIDC identity and refresh-token scopes are public. This list controls
   // only resource-owned scopes.
@@ -42,7 +55,26 @@ export const clientSchema = z.object({
   ).default(["FIRST_PARTY"]),
 });
 
-export const clientInputSchema = clientSchema.omit({ clientId: true });
+function validateEphemeralRedirectUris(
+  client: { public: boolean; redirectUris: string[] },
+  context: z.RefinementCtx,
+): void {
+  if (client.public) return;
+  client.redirectUris.forEach((redirectUri, index) => {
+    if (isEphemeralLocalhostRedirectUri(redirectUri)) {
+      context.addIssue({
+        code: "custom",
+        path: ["redirectUris", index],
+        message: "Ephemeral localhost redirect URIs are only supported for public clients",
+      });
+    }
+  });
+}
+
+export const clientSchema = clientBaseSchema.superRefine(validateEphemeralRedirectUris);
+export const clientInputSchema = clientBaseSchema
+  .omit({ clientId: true })
+  .superRefine(validateEphemeralRedirectUris);
 
 export const resourceSchema = z.object({
   audience: z.string().min(1),

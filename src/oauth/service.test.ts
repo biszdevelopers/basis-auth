@@ -204,6 +204,104 @@ describe("authorization resource check", () => {
       }),
     ).resolves.toMatchObject({ interactionToken: expect.any(String) });
   });
+
+  it("stores the concrete redirect URI selected through a public ephemeral registration", async () => {
+    const ephemeralClient = {
+      ...clientRow,
+      secretHash: null,
+      resources: ["urn:basis:api:test"],
+      metadata: {
+        ...clientRow.metadata,
+        public: true,
+        redirectUris: ["http://localhost:*/auth/callback"],
+        scopes: [],
+      },
+    };
+    const clientExecute = vi.fn(async () => [ephemeralClient]);
+    const insertValues = vi.fn(async () => undefined);
+    const ephemeralDb = {
+      select: () => ({
+        from: (table: unknown) => ({
+          where: () => ({
+            limit: () => table === resourceServers
+              ? [{ audience: "urn:basis:api:test", scopes: [] }]
+              : { prepare: () => ({ execute: clientExecute }) },
+          }),
+        }),
+      }),
+      insert: () => ({ values: insertValues }),
+    } as unknown as Parameters<typeof createOAuthService>[1];
+    const ephemeralService = createOAuthService(
+      config,
+      ephemeralDb,
+      {} as KeyService,
+      {} as IdentityService,
+    );
+
+    await expect(ephemeralService.startAuthorization({
+      initialUri: "/oauth/authorize?client_id=client-1",
+      clientId: "client-1",
+      redirectUri: "http://localhost:49152/auth/callback",
+      responseType: "code",
+      scope: "openid",
+      resources: ["urn:basis:api:test"],
+      state: "state",
+      nonce: "nonce",
+      codeChallenge: "a".repeat(43),
+      codeChallengeMethod: "S256",
+    })).resolves.toMatchObject({ interactionToken: expect.any(String) });
+    expect(insertValues).toHaveBeenCalledWith(expect.objectContaining({
+      redirectUri: "http://localhost:49152/auth/callback",
+    }));
+  });
+});
+
+describe("redirect URI matching", () => {
+  function matches(registeredUris: string[], redirectUri: string, isPublic = true): boolean {
+    const client = {
+      metadata: { public: isPublic, redirectUris: registeredUris },
+      redirectUriSet: new Set(registeredUris),
+    } as Parameters<typeof oauthServiceInternals.redirectUriMatches>[0];
+    return oauthServiceInternals.redirectUriMatches(client, redirectUri);
+  }
+
+  it.each([
+    ["http://localhost:*/", "http://localhost:49152/"],
+    ["http://localhost:*/auth/callback", "http://localhost:49152/auth/callback"],
+    ["http://localhost:*/auth/callback", "http://localhost:1/auth/callback"],
+    ["http://localhost:*/auth/callback", "http://localhost:65535/auth/callback"],
+  ])("matches the public ephemeral registration %s to %s", (registeredUri, redirectUri) => {
+    expect(matches([registeredUri], redirectUri)).toBe(true);
+  });
+
+  it.each([
+    "http://localhost:*/auth/callback",
+    "http://localhost/auth/callback",
+    "http://localhost:0/auth/callback",
+    "http://localhost:65536/auth/callback",
+    "http://localhost:49152/auth/callback/",
+    "http://localhost:49152/other",
+    "http://localhost:49152/auth/callback?source=native",
+    "http://localhost:49152/auth/callback#fragment",
+    "https://localhost:49152/auth/callback",
+    "http://127.0.0.1:49152/auth/callback",
+    "http://user@localhost:49152/auth/callback",
+  ])("rejects %s for a public ephemeral callback registration", (redirectUri) => {
+    expect(matches(["http://localhost:*/auth/callback"], redirectUri)).toBe(false);
+  });
+
+  it("does not activate an ephemeral registration for a confidential client", () => {
+    expect(matches(
+      ["http://localhost:*/auth/callback"],
+      "http://localhost:49152/auth/callback",
+      false,
+    )).toBe(false);
+  });
+
+  it("keeps an ordinary portless localhost registration exact", () => {
+    expect(matches(["http://localhost/"], "http://localhost/")).toBe(true);
+    expect(matches(["http://localhost/"], "http://localhost:49152/")).toBe(false);
+  });
 });
 
 describe("client credentials grant", () => {

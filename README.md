@@ -65,6 +65,8 @@ For basishacks, register the dedicated resource audience `devconnect://nethack.b
 
 Confidential BFF clients use `client_secret_basic`; PostgreSQL stores only a scrypt hash of the configured secret. Public clients use `token_endpoint_auth_method=none`. Every authorization request from either client type must include a fresh RFC 7636 verifier-derived `code_challenge` and `code_challenge_method=S256`. The token request must include the matching `code_verifier`; `nonce` remains an additional OIDC replay binding and is not a substitute for PKCE.
 
+Public clients that listen on an ephemeral local port may register a redirect such as `http://localhost:*/auth/callback`. The `*` replaces only the port: the authorization request must supply a concrete numeric port and the exact registered path, for example `http://localhost:49152/auth/callback`. This syntax is limited to public clients and `localhost`; it does not support query strings or fragments. A normal registration such as `http://localhost/` remains an exact redirect URI and does not match arbitrary ports.
+
 Confidential applications may also use `grant_type=client_credentials` for direct, non-user access. The token request accepts either `application/x-www-form-urlencoded` or `application/json` with the standard `grant_type`, `client_id`, `client_secret`, `scope`, and RFC 8707 `resource` fields. HTTP Basic authentication remains supported and preferred for the client credentials. Application tokens contain `sub` and `client_id` set to the client ID and do not include an ID token, refresh token, user permissions, or user identity claims.
 
 A typical authorization request is:

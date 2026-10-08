@@ -1,5 +1,10 @@
 import { and, eq, gt, isNull, sql } from "drizzle-orm";
-import { permissionDefinitionsSchema, type AppConfig } from "../config.js";
+import {
+  EPHEMERAL_LOCALHOST_REDIRECT_PREFIX,
+  isEphemeralLocalhostRedirectUri,
+  permissionDefinitionsSchema,
+  type AppConfig,
+} from "../config.js";
 import type { Database } from "../database/client.js";
 import {
   secretMatches,
@@ -79,6 +84,26 @@ function parseMetadata(value: Record<string, unknown>): StoredClientMetadata {
   } as StoredClientMetadata;
 }
 
+function redirectUriMatches(
+  client: Pick<OAuthClient, "metadata"> & { redirectUriSet: Set<string> },
+  redirectUri: string | undefined,
+): boolean {
+  if (!redirectUri || isEphemeralLocalhostRedirectUri(redirectUri)) return false;
+  if (client.redirectUriSet.has(redirectUri)) return true;
+  if (!client.metadata.public) return false;
+
+  const match = /^http:\/\/localhost:(\d+)(\/[^?#]*)$/i.exec(redirectUri);
+  if (!match) return false;
+  const port = Number(match[1]);
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) return false;
+
+  const path = match[2]!;
+  return client.metadata.redirectUris.some((registeredUri) =>
+    isEphemeralLocalhostRedirectUri(registeredUri) &&
+    registeredUri.slice(EPHEMERAL_LOCALHOST_REDIRECT_PREFIX.length) === path
+  );
+}
+
 export function createOAuthService(
   config: AppConfig,
   db: Database,
@@ -126,7 +151,8 @@ export function createOAuthService(
     if (!input.clientId) throw new OAuthError("invalid_request", "client_id is required");
     const client = await clientCache.get(input.clientId);
     if (!client) throw new OAuthError("invalid_request", `Client "${input.clientId}" is not registered or has been disabled.`, 400, 14001);
-    if (!input.redirectUri || !client.redirectUriSet.has(input.redirectUri)) {
+    const redirectUri = input.redirectUri;
+    if (!redirectUri || !redirectUriMatches(client, redirectUri)) {
       throw new OAuthError("invalid_request", `Redirect URI "${input.redirectUri}" is not registered for client "${client.metadata.name}"`, 400, 14100);
     }
     if (input.responseType == "token") {
@@ -184,7 +210,7 @@ export function createOAuthService(
       initialUri: input.initialUri,
       interactionHash: hashToken(interactionToken),
       clientId: client.clientId,
-      redirectUri: input.redirectUri,
+      redirectUri,
       scopes,
       resource,
       state: input.state,
@@ -619,4 +645,4 @@ export function createOAuthService(
 }
 
 export type OAuthService = ReturnType<typeof createOAuthService>;
-export const oauthServiceInternals = { parseMetadata };
+export const oauthServiceInternals = { parseMetadata, redirectUriMatches };

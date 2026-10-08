@@ -5,6 +5,7 @@ import { createInterface, type Interface } from "node:readline/promises";
 import { eq } from "drizzle-orm";
 import {
   clientInputSchema,
+  isEphemeralLocalhostRedirectUri,
   permissionDefinitionsSchema,
   type ClientSeed,
   type PermissionDefinitions,
@@ -162,10 +163,11 @@ export async function saveClient(
   return client;
 }
 
-async function promptRedirectUris(rl: Interface, initial: string): Promise<string[]> {
+async function promptRedirectUris(rl: Interface, initial: string, isPublic: boolean): Promise<string[]> {
   for (;;) {
     const candidates = splitList(await ask(rl, "Redirect URIs (comma-separated)", initial));
     const invalid = candidates.filter((uri) => {
+      if (isEphemeralLocalhostRedirectUri(uri)) return false;
       try {
         new URL(uri);
         return false;
@@ -174,6 +176,9 @@ async function promptRedirectUris(rl: Interface, initial: string): Promise<strin
       }
     });
     if (!candidates.length) process.stdout.write("At least one redirect URI is required.\n");
+    else if (!isPublic && candidates.some(isEphemeralLocalhostRedirectUri)) {
+      process.stdout.write("Ephemeral localhost redirect URIs are only supported for public clients.\n");
+    }
     else if (invalid.length) process.stdout.write(`Invalid URL(s): ${invalid.join(", ")}\n`);
     else return candidates;
   }
@@ -271,7 +276,7 @@ export async function promptNewClient(rl: Interface, audiences: string[]): Promi
     clientSecret = provided || (generatedSecret = generateClientSecret());
   }
 
-  const redirectUris = await promptRedirectUris(rl, "");
+  const redirectUris = await promptRedirectUris(rl, "", isPublic);
   const resources = await promptResources(rl, audiences, "");
   const resourceScopes = await promptMissingResourceScopes(rl, resources, new Set(audiences));
 
@@ -446,7 +451,7 @@ export async function promptEditClient(
     newSecret = provided || generateClientSecret();
   }
 
-  const redirectUris = await promptRedirectUris(rl, current.redirectUris.join(", "));
+  const redirectUris = await promptRedirectUris(rl, current.redirectUris.join(", "), isPublic);
   const resources = await promptResources(rl, audiences, current.resources.join(", "));
   const resourceScopes = await promptMissingResourceScopes(rl, resources, new Set(audiences));
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { loadConfig } from "./config.js";
+import { clientInputSchema, loadConfig } from "./config.js";
 
 const base = {
   NODE_ENV: "test",
@@ -52,6 +52,43 @@ describe("configuration", () => {
     });
 
     expect(config.clients[0]?.scopes).toEqual([]);
+  });
+
+  it.each([
+    "http://localhost:*/",
+    "http://localhost:*/auth/callback",
+  ])("accepts the ephemeral localhost redirect %s for public clients", async (redirectUri) => {
+    const clients = JSON.parse(base.OIDC_CLIENTS_JSON);
+    delete clients[0].clientSecret;
+    clients[0].public = true;
+    clients[0].redirectUris = [redirectUri];
+
+    const config = await loadConfig({ ...base, OIDC_CLIENTS_JSON: JSON.stringify(clients) });
+
+    expect(config.clients[0]?.redirectUris).toEqual([redirectUri]);
+  });
+
+  it("rejects ephemeral localhost redirects for confidential client inputs", () => {
+    expect(() => clientInputSchema.parse({
+      clientSecret: "a-sufficiently-long-secret",
+      redirectUris: ["http://localhost:*/auth/callback"],
+      public: false,
+      resources: ["urn:basis:api:test"],
+    })).toThrow("only supported for public clients");
+  });
+
+  it.each([
+    "http://localhost:*",
+    "http://localhost:*/auth/callback?source=native",
+    "http://localhost:*/auth/callback#fragment",
+    "https://localhost:*/auth/callback",
+    "http://127.0.0.1:*/auth/callback",
+  ])("rejects the invalid ephemeral redirect registration %s", (redirectUri) => {
+    expect(() => clientInputSchema.parse({
+      redirectUris: [redirectUri],
+      public: true,
+      resources: ["urn:basis:api:test"],
+    })).toThrow();
   });
 
   it("accepts descriptive, namespaced permission definitions", async () => {
