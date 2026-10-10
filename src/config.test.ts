@@ -5,6 +5,8 @@ const base = {
   NODE_ENV: "test",
   DATABASE_URL: "postgresql://test:test@localhost/test",
   INTERNAL_API_TOKEN: "a".repeat(32),
+  MANAGEMENT_PORTAL_CLIENT_ID: "management-portal",
+  MANAGEMENT_PORTAL_AUDIENCE: "devconnect://noesis",
   OIDC_ISSUER: "https://auth.example.test/",
   OIDC_COOKIE_KEYS: "a".repeat(32),
   OIDC_RESOURCES_JSON: JSON.stringify([
@@ -56,6 +58,33 @@ describe("configuration", () => {
     });
 
     expect(config.clients[0]?.scopes).toEqual([]);
+  });
+
+  it("validates client scopes independently for each claimed resource", async () => {
+    const resources = [
+      { audience: "urn:basis:api:one", name: "One", scopes: ["one.read"] },
+      { audience: "urn:basis:api:two", name: "Two", scopes: ["two.read"] },
+    ];
+    const clients = [{
+      clientId: "multi-resource-client",
+      clientSecret: "a-sufficiently-long-secret",
+      redirectUris: ["https://client.example.test/callback"],
+      resources: resources.map((resource) => resource.audience),
+      resourceScopes: { "urn:basis:api:one": ["one.read"], "urn:basis:api:two": ["two.read"] },
+    }];
+    const config = await loadConfig({
+      ...base,
+      OIDC_RESOURCES_JSON: JSON.stringify(resources),
+      OIDC_CLIENTS_JSON: JSON.stringify(clients),
+    });
+    expect(config.clients[0]?.resourceScopes).toEqual(clients[0]?.resourceScopes);
+
+    clients[0]!.resourceScopes["urn:basis:api:two"] = ["one.read"];
+    await expect(loadConfig({
+      ...base,
+      OIDC_RESOURCES_JSON: JSON.stringify(resources),
+      OIDC_CLIENTS_JSON: JSON.stringify(clients),
+    })).rejects.toThrow("urn:basis:api:two");
   });
 
   it.each([
@@ -214,6 +243,7 @@ describe("configuration", () => {
     }));
     expect(config.resources).toContainEqual({
       audience: "http://localhost:3000/dev/demo",
+      name: "Basis Auth development demo",
       scopes: [],
     });
   });

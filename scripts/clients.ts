@@ -149,7 +149,7 @@ export async function ensureResourcesRegistered(
   for (const reg of missing) {
     await db
       .insert(resourceServers)
-      .values({ audience: reg.audience, scopes: reg.scopes })
+      .values({ audience: reg.audience, name: reg.audience, scopes: reg.scopes })
       .onConflictDoNothing({ target: resourceServers.audience });
   }
   return missing.map((reg) => reg.audience);
@@ -202,7 +202,7 @@ async function promptResources(rl: Interface, audiences: string[], initial: stri
         return byNumber ?? entry;
       },
     );
-    if (resources.length !== 1) process.stdout.write("Exactly one dedicated resource is required.\n");
+    if (!resources.length) process.stdout.write("At least one resource is required.\n");
     else return resources;
   }
 }
@@ -300,6 +300,7 @@ export async function promptNewClient(rl: Interface, audiences: string[]): Promi
     redirectUris,
     public: isPublic,
     ...(scopes.length ? { scopes } : {}),
+    resourceScopes: Object.fromEntries(resources.map((resource) => [resource, scopes])),
     permissions,
     resources,
     requireConsent,
@@ -486,6 +487,7 @@ export async function promptEditClient(
     redirectUris,
     public: isPublic,
     scopes,
+    resourceScopes: Object.fromEntries(resources.map((resource) => [resource, scopes])),
     permissions,
     resources,
     requireConsent,
@@ -512,6 +514,9 @@ export async function applyClientEdit(db: Database, clientId: string, edit: Edit
     redirectUris: edit.redirectUris,
     public: edit.public,
     scopes: edit.scopes,
+    resourceScopes: Object.fromEntries(
+      edit.resources.map((resource) => [resource, edit.resourceScopes.get(resource) ?? edit.scopes]),
+    ),
     permissions: edit.permissions,
   };
 

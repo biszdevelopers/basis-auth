@@ -66,6 +66,12 @@ function parseMetadata(value: Record<string, unknown>): StoredClientMetadata {
         return undefined;
       })
     : [];
+  const resourceScopes = value.resourceScopes && typeof value.resourceScopes === "object"
+    ? Object.fromEntries(Object.entries(value.resourceScopes).map(([resource, scopes]) => [
+        resource,
+        Array.isArray(scopes) ? scopes.filter((scope): scope is string => typeof scope === "string") : [],
+      ]))
+    : {};
   if (
     typeof value.name !== "string" ||
     owners.length === 0 ||
@@ -82,6 +88,7 @@ function parseMetadata(value: Record<string, unknown>): StoredClientMetadata {
     // Existing database rows predate permission definitions. They remain
     // usable until their next seed or TUI edit writes an explicit empty list.
     permissions,
+    resourceScopes,
   } as StoredClientMetadata;
 }
 
@@ -184,15 +191,16 @@ export function createOAuthService(
       throw new OAuthError("invalid_scope", "The openid scope is required");
     }
     const resourceScopes = scopes.filter((scope) => !publicScopes.has(scope));
-    if (!scopesCover(client.metadata.scopes, resourceScopes)) {
-      throw new OAuthError("invalid_scope", "The client is not allowed to request one or more scopes", 400, 14401);
-    }
     if (input.resources.length > 1) {
       throw new OAuthError("invalid_target", "Exactly one resource may be requested");
     }
     const resource = input.resources[0] ?? (client.resources.length === 1 ? client.resources[0] : undefined);
     if (!resource || !client.resources.includes(resource)) {
       throw new OAuthError("invalid_target", "The resource \"" + resource +"\" is not registered for this client", 400, 14501);
+    }
+    const allowedScopes = client.metadata.resourceScopes?.[resource] ?? client.metadata.scopes;
+    if (!scopesCover(allowedScopes, resourceScopes)) {
+      throw new OAuthError("invalid_scope", "The client is not allowed to request one or more scopes for this resource", 400, 14401);
     }
     const [resourceServer] = await db
       .select()
@@ -570,16 +578,16 @@ export function createOAuthService(
       throw new OAuthError("unauthorized_client", "Public clients cannot use the client_credentials grant");
     }
 
-    const scopes = input.scope === undefined
-      ? client.metadata.scopes
-      : [...new Set(input.scope.split(" ").filter(Boolean))];
-    if (!scopesCover(client.metadata.scopes, scopes)) {
-      throw new OAuthError("invalid_scope", "The client is not allowed to request one or more scopes", 400, 14401);
-    }
-
     const resource = input.resource ?? (client.resources.length === 1 ? client.resources[0] : undefined);
     if (!resource || !client.resources.includes(resource)) {
       throw new OAuthError("invalid_target", `The resource "${resource}" is not registered for this client`, 400, 14501);
+    }
+    const allowedScopes = client.metadata.resourceScopes?.[resource] ?? client.metadata.scopes;
+    const scopes = input.scope === undefined
+      ? allowedScopes
+      : [...new Set(input.scope.split(" ").filter(Boolean))];
+    if (!scopesCover(allowedScopes, scopes)) {
+      throw new OAuthError("invalid_scope", "The client is not allowed to request one or more scopes for this resource", 400, 14401);
     }
     const [resourceServer] = await db
       .select()
@@ -656,6 +664,7 @@ export function createOAuthService(
     exchangeClientCredentials,
     revoke,
     userInfo,
+    invalidateClient: (clientId: string) => clientCache.invalidate(clientId),
   };
 }
 

@@ -59,7 +59,7 @@ Production must set `NODE_ENV=production`, an HTTPS `OIDC_ISSUER`, persistent pr
 
 ## Client and resource registration
 
-`OIDC_RESOURCES_JSON` declares API audiences and the scopes each API accepts. Each client owns exactly one dedicated resource, and `OIDC_CLIENTS_JSON` declares the resource-owned scopes that application may request. The standard `openid`, `profile`, `email`, and `offline_access` scopes are public to every registered client and do not need to be listed in either configuration.
+`OIDC_RESOURCES_JSON` declares API audiences, display names, and the scopes each API accepts. A client claims one or more resources, and `OIDC_CLIENTS_JSON` declares its allowed scopes per resource through `resourceScopes` (the legacy flat `scopes` list remains a fallback). The standard `openid`, `profile`, `email`, and `offline_access` scopes are public to every registered client and do not need to be listed in either configuration.
 
 For basishacks, register the dedicated resource audience `devconnect://nethack.bisz.dev` and the application scope `nethack.access`; the client explicitly requests it with `openid profile email offline_access`. Client registrations initialize descriptive global permission definitions as a JSON object, for example `"nethack.Projects.read.all": "View all projects"`. User grants are stored globally, not per client, and every access token contains them in its `permissions` array. Definitions are a catalog for future administration and display; they do not filter existing grants. The complete JSON example is in `.env.example`.
 
@@ -98,7 +98,7 @@ bun run clients:add      # add-client walkthrough
 bun run clients:remove   # pick a client from a numbered list
 ```
 
-Adding walks through name, type (confidential/public), redirect URIs, one dedicated resource, scopes, a JSON permission object mapping names to descriptions, consent, organizations, and optional account filters. For confidential clients, leave the secret blank to auto-generate a `sk-...` secret; it is printed once (PostgreSQL stores only a scrypt hash, so copy it then). Editing keeps the existing secret and owners unless you rotate or change the client type; a rotated secret is likewise shown once. Passing a JSON definition without `clientId` still works non-interactively and also auto-generates a missing secret:
+Adding walks through name, type (confidential/public), redirect URIs, resources, scopes, a JSON permission object mapping names to descriptions, consent, organizations, and optional account filters. For confidential clients, leave the secret blank to auto-generate a `sk-...` secret; it is printed once (PostgreSQL stores only a scrypt hash, so copy it then). Editing keeps the existing secret and owners unless you rotate or change the client type; a rotated secret is likewise shown once. Passing a JSON definition without `clientId` still works non-interactively and also auto-generates a missing secret:
 
 ```bash
 bun run clients:add -- '{"name":"Example","redirectUris":["https://example.test/callback"],"public":false,"resources":["urn:basis:api:example"]}'
@@ -137,7 +137,7 @@ Other platforms should implement the same contract with their standard OAuth res
 
 Resource APIs that require immediate per-user revocation must also load the token subject's `disabled` and `tokens_valid_after` state after signature validation. Reject disabled subjects and tokens whose `iat` is at or before that barrier. The example middleware exposes `loadTokenSubject` for this check while keeping JWT and revocation validation local to the resource API.
 
-`basis-api` uses the private `/internal/users/:userId` endpoints for this state, profile pictures, and user PATCH operations. They run on a separate listener configured by `INTERNAL_API_HOST` and `INTERNAL_API_PORT`, bound to `127.0.0.1:3001` by default. Requests also require `Authorization: Bearer <INTERNAL_API_TOKEN>`. Use the same random token in trusted local services and keep the listener off the public network.
+`basis-api` uses the private `/internal/users/:userId` endpoints for this state, profile pictures, and user PATCH operations. The same listener exposes `/internal/applications` management endpoints for the portal. Every request requires `Authorization: Bearer <INTERNAL_API_TOKEN>`; application-management requests additionally require the signed end-user access token in `X-Basis-Actor-Token: Bearer ...`. Basis Auth verifies its audience, portal client ID, user grant type, required scope, delegated permissions, and per-application membership before any operation. Configure those checks with `MANAGEMENT_PORTAL_CLIENT_ID`, `MANAGEMENT_PORTAL_AUDIENCE`, and `MANAGEMENT_PORTAL_SCOPE`. The listener is configured by `INTERNAL_API_HOST` and `INTERNAL_API_PORT`, bound to `127.0.0.1:3001` by default; keep it off the public network.
 
 ## Development commands
 

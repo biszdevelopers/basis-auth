@@ -8,6 +8,7 @@ export interface CachedClient extends OAuthClient {
 
 export interface ClientCache {
   get(clientId: string): Promise<CachedClient | undefined>;
+  invalidate(clientId: string): void;
 }
 
 export interface ClientCacheOptions {
@@ -45,6 +46,9 @@ export function createClientCache(
       };
       cache.set(clientId, cached);
       return cached;
+    },
+    invalidate(clientId: string) {
+      cache.delete(clientId);
     },
   };
 }

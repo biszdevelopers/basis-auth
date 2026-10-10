@@ -43,10 +43,11 @@ const clientBaseSchema = z.object({
   // OIDC identity and refresh-token scopes are public. This list controls
   // only resource-owned scopes.
   scopes: z.array(z.string().min(1)).default([]),
+  resourceScopes: z.record(z.string().min(1), z.array(z.string().min(1))).optional(),
   // Definitions describe globally named user permissions issued to this app.
   // They deliberately do not constrain grants already stored for a user.
   permissions: permissionDefinitionsSchema.default({}),
-  resources: z.array(z.string().min(1)).length(1, "Each client must use one dedicated resource"),
+  resources: z.array(z.string().min(1)).min(1, "Each client must use at least one resource"),
   requireConsent: z.boolean().default(true),
   filterMode: z.enum(["whitelist", "blacklist"]).nullable().default(null),
   filterContent: z.array(z.string().min(1).transform((value) => value.trim().toLowerCase())).default([]),
@@ -79,6 +80,7 @@ export const clientInputSchema = clientBaseSchema
 
 export const resourceSchema = z.object({
   audience: z.string().min(1),
+  name: z.string().trim().min(1).optional(),
   scopes: z.array(z.string().min(1)).default([]),
 });
 
@@ -99,6 +101,9 @@ const environmentSchema = z.object({
   INTERNAL_API_HOST: z.string().min(1).default("127.0.0.1"),
   INTERNAL_API_PORT: z.coerce.number().int().positive().default(3001),
   INTERNAL_API_TOKEN: z.string().min(32),
+  MANAGEMENT_PORTAL_CLIENT_ID: z.string().min(1),
+  MANAGEMENT_PORTAL_AUDIENCE: z.string().min(1),
+  MANAGEMENT_PORTAL_SCOPE: z.string().min(1).default("noesis.access"),
   OIDC_ISSUER: z.url().transform((issuer) => issuer.replace(/\/$/, "")),
   OIDC_COOKIE_KEYS: z.string().min(32),
   OIDC_JWKS_JSON: z.string().optional(),
@@ -133,6 +138,7 @@ function developmentDemoConfiguration(issuer: string): {
       redirectUris: [`${issuer}${DEVELOPMENT_DEMO_CALLBACK_PATH}`],
       public: true,
       scopes: [],
+      resourceScopes: { [audience]: [] },
       permissions: {},
       resources: [audience],
       requireConsent: true,
@@ -140,7 +146,7 @@ function developmentDemoConfiguration(issuer: string): {
       filterContent: [],
       organizationIds: [DEFAULT_ORGANIZATION_ID],
     },
-    resource: { audience, scopes: [] },
+    resource: { audience, name: "Basis Auth development demo", scopes: [] },
   };
 }
 
@@ -151,6 +157,9 @@ export interface AppConfig {
   internalApiHost: string;
   internalApiPort: number;
   internalApiToken: string;
+  managementPortalClientId: string;
+  managementPortalAudience: string;
+  managementPortalScope: string;
   issuer: string;
   cookieKeys: string[];
   jwks: { keys: JWK[] };
@@ -258,17 +267,22 @@ export async function loadConfig(source: NodeJS.ProcessEnv = process.env): Promi
   }
   const knownResources = new Set(resources.map((resource) => resource.audience));
   for (const configuredClient of clients) {
-    if (configuredClient.resources.length !== 1) {
-      throw new Error(`Client ${configuredClient.clientId} must declare exactly one dedicated resource`);
-    }
     for (const resource of configuredClient.resources) {
       if (!knownResources.has(resource)) {
         throw new Error(`Client ${configuredClient.clientId} references unknown resource ${resource}`);
       }
     }
-    const resource = resources.find((candidate) => candidate.audience === configuredClient.resources[0]);
-    if (!resource || configuredClient.scopes.some((scope) => !resource.scopes.includes(scope))) {
-      throw new Error(`Client ${configuredClient.clientId} declares scopes not registered by its resource`);
+    const resourceScopes = configuredClient.resourceScopes ?? Object.fromEntries(
+      configuredClient.resources.map((resource) => [resource, configuredClient.scopes]),
+    );
+    for (const [audience, scopes] of Object.entries(resourceScopes)) {
+      if (!configuredClient.resources.includes(audience)) {
+        throw new Error(`Client ${configuredClient.clientId} declares scopes for an unclaimed resource`);
+      }
+      const resource = resources.find((candidate) => candidate.audience === audience);
+      if (!resource || scopes.some((scope) => !resource.scopes.includes(scope))) {
+        throw new Error(`Client ${configuredClient.clientId} declares scopes not registered by its resource ${audience}`);
+      }
     }
   }
 
@@ -295,6 +309,9 @@ export async function loadConfig(source: NodeJS.ProcessEnv = process.env): Promi
     internalApiHost: env.INTERNAL_API_HOST,
     internalApiPort: env.INTERNAL_API_PORT,
     internalApiToken: env.INTERNAL_API_TOKEN,
+    managementPortalClientId: env.MANAGEMENT_PORTAL_CLIENT_ID,
+    managementPortalAudience: env.MANAGEMENT_PORTAL_AUDIENCE,
+    managementPortalScope: env.MANAGEMENT_PORTAL_SCOPE,
     issuer: env.OIDC_ISSUER,
     cookieKeys,
     jwks: await loadJwks(env),

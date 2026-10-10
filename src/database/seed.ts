@@ -34,6 +34,7 @@ export interface StoredClientMetadata extends Record<string, unknown> {
   redirectUris: string[];
   public: boolean;
   scopes: string[];
+  resourceScopes?: Record<string, string[]>;
   permissions: PermissionDefinitions;
 }
 
@@ -45,10 +46,10 @@ export async function seedConfiguration(
   for (const resource of resources) {
     await db
       .insert(resourceServers)
-      .values({ audience: resource.audience, scopes: resource.scopes })
+      .values({ audience: resource.audience, name: resource.name ?? resource.audience, scopes: resource.scopes })
       .onConflictDoUpdate({
         target: resourceServers.audience,
-        set: { scopes: resource.scopes, updatedAt: new Date() },
+        set: { name: resource.name ?? resource.audience, scopes: resource.scopes, updatedAt: new Date() },
       });
   }
 
@@ -68,6 +69,9 @@ export async function seedConfiguration(
       redirectUris: client.redirectUris,
       public: client.public,
       scopes: client.scopes,
+      resourceScopes: client.resourceScopes ?? Object.fromEntries(
+        client.resources.map((resource) => [resource, client.scopes]),
+      ),
       permissions: client.permissions,
     };
     const [existing] = await db

@@ -13,6 +13,7 @@ import { createOAuthService } from "./oauth/service.js";
 import { createSessionService } from "./oauth/sessions.js";
 import { createInternalUserService } from "./internal/users.js";
 import { createInternalApp } from "./internal/app.js";
+import { createInternalApplicationService } from "./internal/applications.js";
 
 const config = await loadConfig();
 await migrateDatabase(config.databaseUrl);
@@ -30,8 +31,15 @@ const sessions = createSessionService(db);
 const oauth = createOAuthService(config, db, keys, identity);
 const microsoft = createMicrosoftService(config, db, identity);
 const internalUsers = createInternalUserService(db, emailDomains);
+const internalApplications = createInternalApplicationService(db, config.issuer, oauth.invalidateClient);
 const app = createApp(config, oauth, keys, sessions, identity, microsoft);
-const internalApp = createInternalApp(config.internalApiToken, internalUsers);
+const internalApp = createInternalApp(config.internalApiToken, internalUsers, {
+  applications: internalApplications,
+  keys,
+  clientId: config.managementPortalClientId,
+  audience: config.managementPortalAudience,
+  scope: config.managementPortalScope,
+});
 
 const server = serve({ fetch: app.fetch, port: config.port }, () => {
   console.log(`basis-auth listening on ${config.issuer}`);
