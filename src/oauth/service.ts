@@ -16,12 +16,13 @@ import {
   authorizationCodes,
   authorizationConsents,
   authorizationRequests,
+  oidcClientOrganizations,
   oidcClients,
+  organizations,
   refreshTokens,
   resourceServers,
 } from "../database/schema.js";
 import type { IdentityService } from "../identity.js";
-import type { LoginType } from "../loginTypes.js";
 import { hashToken, isValidS256PkceRequest, randomToken, verifyS256Pkce } from "./crypto.js";
 import { OAuthError } from "./errors.js";
 import type { KeyService } from "./keys.js";
@@ -45,7 +46,7 @@ export interface OAuthClient {
   requireConsent: boolean;
   filterMode: "whitelist" | "blacklist" | null;
   filterContent: string[];
-  loginTypes: LoginType[];
+  organizations: (typeof organizations.$inferSelect)[];
   metadata: StoredClientMetadata;
 }
 
@@ -119,7 +120,19 @@ export function createOAuthService(
 
   async function clientById(clientId: string): Promise<OAuthClient | undefined> {
     const [row] = await clientByIdStmt.execute({ id: clientId });
-    return row ? { ...row, metadata: parseMetadata(row.metadata) } : undefined;
+    if (!row) return undefined;
+    const linkedOrganizations = await db
+      .select({
+        id: organizations.id,
+        organizationId: organizations.organizationId,
+        firstParty: organizations.firstParty,
+        createdAt: organizations.createdAt,
+        updatedAt: organizations.updatedAt,
+      })
+      .from(oidcClientOrganizations)
+      .innerJoin(organizations, eq(oidcClientOrganizations.organizationId, organizations.id))
+      .where(eq(oidcClientOrganizations.clientId, clientId));
+    return { ...row, organizations: linkedOrganizations, metadata: parseMetadata(row.metadata) };
   }
 
   const clientCache: ClientCache = createClientCache(clientById, { ttlMs: 60_000 });
@@ -199,8 +212,10 @@ export function createOAuthService(
       throw new OAuthError("invalid_scope", "A requested scope is not supported by the resource", 400, 14401);
     }
 
-    const sessionLoginType = input.session ? await identity.loginTypeForUser(input.session.userId) : undefined;
-    const allowedSession = input.session && sessionLoginType && client.loginTypes.includes(sessionLoginType)
+    const sessionOrganization = input.session ? await identity.organizationForUser(input.session.userId) : undefined;
+    const allowedSession = input.session && sessionOrganization && client.organizations.some(
+      (organization) => organization.id === sessionOrganization.id,
+    )
       ? input.session
       : undefined;
     const id = crypto.randomUUID();
@@ -265,7 +280,7 @@ export function createOAuthService(
     return {
       id: client.clientId,
       name: client.metadata.name,
-      loginTypes: client.loginTypes,
+      organizations: client.organizations,
     };
   }
 

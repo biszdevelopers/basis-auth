@@ -10,7 +10,7 @@ function makeClient(clientId: string, redirectUris: string[], filterContent: str
     requireConsent: false,
     filterMode: null,
     filterContent,
-    loginTypes: ["FIRST_PARTY"],
+    organizations: [],
     metadata: {
       name: clientId,
       owners: [{ id: "owner", role: "role.ADMIN" }],

@@ -3,10 +3,9 @@ import { toPng } from "jdenticon";
 import * as client from "openid-client";
 import type { AppConfig } from "./config.js";
 import type { Database } from "./database/client.js";
-import type { EmailDomainService } from "./database/emailDomains.js";
-import { upstreamAuthRequests } from "./database/schema.js";
+import { organizations, upstreamAuthRequests } from "./database/schema.js";
 import type { IdentityService } from "./identity.js";
-import { microsoftAuthorityFor, type LoginType } from "./loginTypes.js";
+import { OAuthError } from "./oauth/errors.js";
 
 const MICROSOFT_SCOPE = "openid profile email User.Read";
 
@@ -38,7 +37,6 @@ export function createMicrosoftService(
   appConfig: AppConfig,
   db: Database,
   identity: IdentityService,
-  emailDomains: EmailDomainService,
 ) {
   const discovered = new Map<string, Promise<client.Configuration>>();
 
@@ -55,11 +53,15 @@ export function createMicrosoftService(
     return configuration;
   }
 
-  async function begin(authorizationRequestId: string, allowedLoginTypes: LoginType[]) {
-    const firstPartyOrganizationId = allowedLoginTypes.includes("COMMON") || allowedLoginTypes.includes("THIRD_PARTY")
-      ? ""
-      : await emailDomains.firstPartyOrganizationId();
-    const authority = microsoftAuthorityFor(allowedLoginTypes, firstPartyOrganizationId);
+  async function begin(
+    authorizationRequestId: string,
+    allowedOrganizations: Pick<typeof organizations.$inferSelect, "organizationId">[],
+  ) {
+    if (allowedOrganizations.length === 0) throw new OAuthError("invalid_client"
+      , "No organizations are configured for this client", 400, 14005);
+    const authority = allowedOrganizations.length === 1
+      ? allowedOrganizations[0]!.organizationId
+      : "organizations";
     const configuration = await microsoftConfig(authority);
     const state = client.randomState();
     const nonce = client.randomNonce();
@@ -133,9 +135,9 @@ export function createMicrosoftService(
         claims.sub,
       ),
     });
-    const loginType = await identity.loginTypeForUser(user.id);
-    if (!loginType) throw new Error("Microsoft user classification could not be resolved");
-    return { authorizationRequestId: request.authorizationRequestId, user, loginType };
+    const organization = await identity.organizationForUser(user.id);
+    if (!organization) throw new Error("Microsoft user organization could not be resolved");
+    return { authorizationRequestId: request.authorizationRequestId, user, organization };
   }
 
   return { begin, callback };

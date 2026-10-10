@@ -12,14 +12,12 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
-import type { LoginType } from "../loginTypes.js";
-
 const bytea = customType<{ data: Buffer; driverData: Buffer }>({
   dataType: () => "bytea",
 });
 
-export const acceptedEmailDomains = pgTable(
-  "accepted_email_domains",
+export const organizations = pgTable(
+  "organizations",
   {
     id: uuid("id").primaryKey(),
     organizationId: uuid("organization_id").notNull().unique(),
@@ -28,7 +26,7 @@ export const acceptedEmailDomains = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    uniqueIndex("accepted_email_domains_one_first_party")
+    uniqueIndex("organizations_one_first_party")
       .on(table.firstParty)
       .where(sql`${table.firstParty} = true`),
   ],
@@ -37,9 +35,9 @@ export const acceptedEmailDomains = pgTable(
 export const emailDomainSuffixes = pgTable("email_domain_suffixes", {
   id: uuid("id").primaryKey(),
   suffix: text("suffix").notNull().unique(),
-  acceptedEmailDomainId: uuid("accepted_email_domain_id")
+  organizationId: uuid("organization_id")
     .notNull()
-    .references(() => acceptedEmailDomains.id, { onDelete: "cascade" }),
+    .references(() => organizations.id, { onDelete: "cascade" }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -95,7 +93,6 @@ export const oidcClients = pgTable(
     requireConsent: boolean("require_consent").notNull().default(true),
     filterMode: text("filter_mode").$type<"whitelist" | "blacklist" | null>(),
     filterContent: jsonb("filter_content").notNull().default([]).$type<string[]>(),
-    loginTypes: jsonb("login_types").notNull().default(["FIRST_PARTY"]).$type<LoginType[]>(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
@@ -103,18 +100,21 @@ export const oidcClients = pgTable(
       "oidc_clients_filter_mode_check",
       sql`${table.filterMode} in ('whitelist', 'blacklist') or ${table.filterMode} is null`,
     ),
-    check(
-      "oidc_clients_login_types_check",
-      sql`jsonb_typeof(${table.loginTypes}) = 'array'
-        and jsonb_array_length(${table.loginTypes}) between 1 and 3
-        and ${table.loginTypes} <@ '["FIRST_PARTY", "THIRD_PARTY", "COMMON"]'::jsonb
-        and (
-          jsonb_array_length(${table.loginTypes}) = 1
-          or (jsonb_array_length(${table.loginTypes}) = 2 and jsonb_path_match(${table.loginTypes}, '$[0] != $[1]'))
-          or (jsonb_array_length(${table.loginTypes}) = 3 and jsonb_path_match(${table.loginTypes}, '$[0] != $[1] && $[0] != $[2] && $[1] != $[2]'))
-        )`,
-    ),
   ],
+);
+
+export const oidcClientOrganizations = pgTable(
+  "oidc_client_organizations",
+  {
+    clientId: text("client_id")
+      .notNull()
+      .references(() => oidcClients.clientId, { onDelete: "cascade" }),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.clientId, table.organizationId] })],
 );
 
 export const resourceServers = pgTable("resource_servers", {

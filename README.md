@@ -86,9 +86,9 @@ A typical authorization request is:
 
 Each client can restrict Microsoft accounts with `filterMode` and `filterContent` in `OIDC_CLIENTS_JSON`. Set `filterMode` to `"whitelist"` to allow only the normalized Microsoft email/unique names in `filterContent`, or `"blacklist"` to reject those names. Leave the mode as `null` with an empty list to allow all accounts. Administrators can also set `users.disabled` to block an account across every client; blocked sign-ins return to the authorization page with an error.
 
-Each client also declares a non-empty `loginTypes` array containing `FIRST_PARTY`, `THIRD_PARTY`, and/or `COMMON`. `COMMON` selects Microsoft's `/common` authority, otherwise `THIRD_PARTY` selects `/organizations`, and a first-party-only client uses the configured BASIS tenant. After callback, the resolved email-domain classification must be present in the client's array. Omitting this field defaults to `FIRST_PARTY` for compatibility.
+Each client also declares a non-empty `organizationIds` array containing the Microsoft tenant IDs allowed to sign in. A single organization uses that tenant's Microsoft authority; multiple organizations use Microsoft's `/organizations` authority. After callback, the user's email domain must resolve to one of the organizations linked to the client. Omitting this field defaults to the BASIS organization.
 
-Accepted email-domain policies and their suffixes are stored in PostgreSQL. `basis-global.com` and `basischina.com` initially share the BASIS first-party tenant policy. Unmapped addresses are classified as `COMMON`; changing an email or signing in again refreshes the user's stored suffix reference.
+Organizations and their accepted email-domain suffixes are stored in PostgreSQL. `basis-global.com` and `basischina.com` initially share the BASIS organization. An unmapped address cannot sign in; changing an email or signing in again refreshes the user's stored suffix reference.
 
 Manage clients with the interactive TUI (numbered pickers, validated prompts, no flags needed):
 
@@ -98,7 +98,7 @@ bun run clients:add      # add-client walkthrough
 bun run clients:remove   # pick a client from a numbered list
 ```
 
-Adding walks through name, type (confidential/public), redirect URIs, one dedicated resource, scopes, a JSON permission object mapping names to descriptions, consent, login types, and optional account filters. For confidential clients, leave the secret blank to auto-generate a `sk-...` secret; it is printed once (PostgreSQL stores only a scrypt hash, so copy it then). Editing keeps the existing secret and owners unless you rotate or change the client type; a rotated secret is likewise shown once. Passing a JSON definition without `clientId` still works non-interactively and also auto-generates a missing secret:
+Adding walks through name, type (confidential/public), redirect URIs, one dedicated resource, scopes, a JSON permission object mapping names to descriptions, consent, organizations, and optional account filters. For confidential clients, leave the secret blank to auto-generate a `sk-...` secret; it is printed once (PostgreSQL stores only a scrypt hash, so copy it then). Editing keeps the existing secret and owners unless you rotate or change the client type; a rotated secret is likewise shown once. Passing a JSON definition without `clientId` still works non-interactively and also auto-generates a missing secret:
 
 ```bash
 bun run clients:add -- '{"name":"Example","redirectUris":["https://example.test/callback"],"public":false,"resources":["urn:basis:api:example"]}'
@@ -166,6 +166,7 @@ These are NOT Http response codes.
 | 14002 | invalid_client | Client is disabled |
 | 14003 | invalid_client | A public client attempts to send an application secret. `PKCE` is required for this mode. |
 | 14004 | invalid_client | Incorrect or unconfigured client secret |
+| 14005 | invalid_client | Client does not have any configured organizations |
 | 14100 | invalid
 | 14429 | unsupported_response_type | Unsupported response type |
 | 14401 | invalid_scope | Client requests one or more scopes that is not configured or permitted |

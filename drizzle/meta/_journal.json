@@ -78,6 +78,13 @@
       "when": 1790861014982,
       "tag": "0010_silly_ghost_rider",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1791437589019,
+      "tag": "0011_unusual_rictor",
+      "breakpoints": true
     }
   ]
 }

@@ -463,11 +463,12 @@ export function createApp(
     const bridgeToken = getCookie(c, INTERACTION_COOKIE);
     if (!bridgeToken) throw new OAuthError("invalid_request", "Interaction cookie is missing");
     const request = await oauth.getAuthorization(bridgeToken);
-    const client = await oauth.getClient(request.clientId);
+    const { organizations, ...client } = await oauth.getClient(request.clientId);
     return c.json({
       uid: request.id,
       prompt: request.userId ? "consent" : "login",
       client,
+      organizations,
       scopes: request.scopes,
       resources: [request.resource],
       accountId: request.userId,
@@ -501,7 +502,7 @@ export function createApp(
       if (!uid) throw new OAuthError("invalid_request", "Interaction is not found or expired");
       const { request, client } = await oauth.interaction(uid, getCookie(c, INTERACTION_COOKIE));
       if (request.userId) throw new OAuthError("invalid_request", "User is already authenticated");
-      const redirectTo = (await microsoft.begin(request.id, client.loginTypes)).href;
+      const redirectTo = (await microsoft.begin(request.id, client.organizations)).href;
       if (c.req.header("accept")?.includes("application/json")) {
         return c.json({ redirectTo });
       }
@@ -510,7 +511,11 @@ export function createApp(
       console.log(error)
       log.error(error, "Microsoft upstream begin failed");
       
-      return frontendFlowError(c, "Upstream Error");
+      if (error instanceof OAuthError) {
+        return frontendFlowError(c, error);
+      } else {
+        return frontendFlowError(c, "Upstream Error");
+      }
     }
   });
 
@@ -528,7 +533,7 @@ export function createApp(
       const matchesFilter = filterContent.has(filteredEmail);
       if (
         result.user.disabled ||
-        !client.loginTypes.includes(result.loginType) ||
+        !client.organizations.some((organization) => organization.id === result.organization.id) ||
         (client?.filterMode === "whitelist" && !matchesFilter) ||
         (client?.filterMode === "blacklist" && matchesFilter)
       ) {

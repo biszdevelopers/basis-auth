@@ -1,7 +1,8 @@
 import { readFile } from "node:fs/promises";
 import { generateKeyPair, exportJWK, type JWK } from "jose";
 import { z } from "zod";
-import { loginTypes } from "./loginTypes.js";
+
+export const DEFAULT_ORGANIZATION_ID = "cbc6e1e2-a6bb-4002-bbdc-6da892a051a7";
 
 export const permissionDefinitionsSchema = z
   .record(z.string().trim().min(1), z.string().trim().min(1))
@@ -49,10 +50,10 @@ const clientBaseSchema = z.object({
   requireConsent: z.boolean().default(true),
   filterMode: z.enum(["whitelist", "blacklist"]).nullable().default(null),
   filterContent: z.array(z.string().min(1).transform((value) => value.trim().toLowerCase())).default([]),
-  loginTypes: z.array(z.enum(loginTypes)).min(1).refine(
+  organizationIds: z.array(z.uuid()).min(1).refine(
     (values) => new Set(values).size === values.length,
-    "Login types must be unique",
-  ).default(["FIRST_PARTY"]),
+    "Organization IDs must be unique",
+  ).default([DEFAULT_ORGANIZATION_ID]),
 });
 
 function validateEphemeralRedirectUris(
@@ -137,7 +138,7 @@ function developmentDemoConfiguration(issuer: string): {
       requireConsent: true,
       filterMode: null,
       filterContent: [],
-      loginTypes: ["FIRST_PARTY"],
+      organizationIds: [DEFAULT_ORGANIZATION_ID],
     },
     resource: { audience, scopes: [] },
   };

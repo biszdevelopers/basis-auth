@@ -38,6 +38,10 @@ export interface AuthorizeSession {
       microsoftConfigured: boolean,
 };
 
+function showAcceptedLoginTypes() {
+    return<></>;
+}
+
 export function LoginCard({
     stat,
     onLogout,
@@ -179,7 +183,11 @@ export function LoginCard({
                             </div>
 
                             <div>
-                                <Label className="text-sm">Your request could not be completed because an error had occured. This is likely not your fault.</Label>
+                                {stat.error.error === "access_denied" ? (
+                                    <Label className="text-sm">Your account is not allowed to sign in to this application. Contact the application provider for assistance.</Label>
+                                ) : (
+                                    <Label className="text-sm">Your request could not be completed because an error had occured. This is likely not your fault.</Label>
+                                )}
                                 <br></br>
                                 <Label className="text-sm text-muted-foreground">{stat.error.error_description} ({stat.error.code})</Label>
                             </div>
@@ -200,9 +208,11 @@ export function LoginCard({
                             {firstPartyOnly ? <><Label className="text-muted-foreground text-xs">A&nbsp;</Label>
                             <HoverCard openDelay={200} closeDelay={200}>
                                 <HoverCardTrigger asChild>
-                                    <button type="button" className="flex items-center gap-2 text-muted-foreground">
-                                        <Label className="text-xs text-primary">BASIS Organization</Label>
-                                    </button>
+
+                                    
+                                    
+                                    <Label className="text-xs text-primary">BIBS·C Organization</Label>
+                                    
                                 </HoverCardTrigger>
                                 <HoverCardContent>
                                     <Label>Must be one of the following:</Label>
@@ -284,9 +294,7 @@ export function LoginCard({
                         <HoverCardContent className="flex flex-col gap-4">
                             <p>
                                 <span className="font-mono text-devconnect glow pr-1">DevConnect</span>
-                                is used as a SSO (<a className="hover:underline underline-offset-2 text-devconnect" href="https://bisz.dev/DevConnect">Single Sign-On</a>) service proxy by 
-                                <span className="text-devconnect px-1">{stat.login?.client.name}</span>
-                                to request basischina-related services and information (such as your school email and teams username).
+                                is used as a SSO (<a className="hover:underline underline-offset-2 text-devconnect" href="https://bisz.dev/DevConnect">Single Sign-On</a>) service proxy{stat.login && <> by<span className="text-devconnect px-1">{stat.login?.client.name}</span></>} to request basischina-related services and information (such as your school email and teams username).
                             </p>
                             <p>
                                 This allows student and personal applications to link with your school account

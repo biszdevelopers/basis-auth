@@ -5,7 +5,7 @@ import { createDatabase, type Database } from "../database/client.js";
 import { migrateDatabase } from "../database/migrate.js";
 import { seedConfiguration } from "../database/seed.js";
 import { createEmailDomainService } from "../database/emailDomains.js";
-import { acceptedEmailDomains, emailDomainSuffixes, oidcClients, users } from "../database/schema.js";
+import { emailDomainSuffixes, oidcClients, organizations, users } from "../database/schema.js";
 import { createIdentityService, type IdentityService } from "../identity.js";
 import { createKeyService, type KeyService } from "./keys.js";
 import { createOAuthService, type OAuthService } from "./service.js";
@@ -43,7 +43,7 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
           permissions: { "nethack.Projects.read.all": "View all projects" },
           resources: ["urn:basis:api:projects"],
           requireConsent: false,
-          loginTypes: ["COMMON"],
+          organizationIds: ["cbc6e1e2-a6bb-4002-bbdc-6da892a051a7"],
         },
       ]),
     });
@@ -77,7 +77,7 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
   });
 
   it("seeds domains and clears user links when a suffix is deleted", async () => {
-    const policies = await db.select().from(acceptedEmailDomains);
+    const policies = await db.select().from(organizations);
     const suffixes = await db.select().from(emailDomainSuffixes);
     expect(policies).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -94,7 +94,7 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
     const policy = await emailDomains.createPolicy({ organizationId: crypto.randomUUID(), firstParty: false });
     const suffix = await emailDomains.createSuffix({
       suffix: `${marker}.example.com`,
-      acceptedEmailDomainId: policy.id,
+      organizationId: policy.id,
     });
     await expect(emailDomains.getSuffix(suffix.id)).resolves.toMatchObject({ suffix: `${marker}.example.com` });
     await emailDomains.updateSuffix(suffix.id, { suffix: `${marker}.example.org` });

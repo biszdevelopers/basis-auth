@@ -2,8 +2,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import type { BootstrapPermissionGrant } from "./config.js";
 import type { Database } from "./database/client.js";
 import type { EmailDomainService } from "./database/emailDomains.js";
-import { acceptedEmailDomains, emailDomainSuffixes, userPermissions, users } from "./database/schema.js";
-import { loginTypeFor } from "./loginTypes.js";
+import { emailDomainSuffixes, organizations, userPermissions, users } from "./database/schema.js";
 
 export interface UpstreamIdentity {
   provider: string;
@@ -141,14 +140,20 @@ export function createIdentityService(
     return user;
   }
 
-  async function loginTypeForUser(userId: string) {
-    const [row] = await db.select({ firstParty: acceptedEmailDomains.firstParty })
+  async function organizationForUser(userId: string) {
+    const [row] = await db.select({
+      id: organizations.id,
+      organizationId: organizations.organizationId,
+      firstParty: organizations.firstParty,
+      createdAt: organizations.createdAt,
+      updatedAt: organizations.updatedAt,
+    })
       .from(users)
       .leftJoin(emailDomainSuffixes, eq(users.emailSuffixId, emailDomainSuffixes.id))
-      .leftJoin(acceptedEmailDomains, eq(emailDomainSuffixes.acceptedEmailDomainId, acceptedEmailDomains.id))
+      .leftJoin(organizations, eq(emailDomainSuffixes.organizationId, organizations.id))
       .where(eq(users.id, userId))
       .limit(1);
-    return row ? loginTypeFor(row.firstParty) : undefined;
+    return row?.id ? row : undefined;
   }
 
   const findUserCompactStmt = db
@@ -168,7 +173,7 @@ export function createIdentityService(
   }
 
   return {
-    upsertFromMicrosoft, findAccount, permissionsFor, findUsersByIds, findUser, findUserCompact, loginTypeForUser,
+    upsertFromMicrosoft, findAccount, permissionsFor, findUsersByIds, findUser, findUserCompact, organizationForUser,
   };
 }
 

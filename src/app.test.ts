@@ -502,10 +502,13 @@ describe("authorization interactions", () => {
   });
 
   it("returns the Microsoft redirect URL to frontend requests", async () => {
+    const linkedOrganizations = [
+      { id: "organization-record-id", organizationId: "cbc6e1e2-a6bb-4002-bbdc-6da892a051a7" },
+    ];
     const oauth = {
       interaction: vi.fn().mockResolvedValue({
         request: { id: "request-id" },
-        client: { loginTypes: ["FIRST_PARTY"] },
+        client: { organizations: linkedOrganizations },
       }),
     } as unknown as OAuthService;
     const microsoft = {
@@ -525,6 +528,7 @@ describe("authorization interactions", () => {
     });
 
     expect(await response.json()).toEqual({ redirectTo: "https://login.microsoftonline.com/authorize" });
+    expect(microsoft.begin).toHaveBeenCalledWith("request-id", linkedOrganizations);
   });
 
   it("sends upstream Microsoft failures back to the stored authorization URL", async () => {
@@ -550,6 +554,11 @@ describe("authorization interactions", () => {
   });
 
   it("identifies authenticated interactions as consent pages", async () => {
+    const organizations = [{
+      id: "organization-record-id",
+      organizationId: "cbc6e1e2-a6bb-4002-bbdc-6da892a051a7",
+      firstParty: true,
+    }];
     const oauth = {
       getAuthorization: vi.fn().mockResolvedValue({
         id: "request-id",
@@ -558,7 +567,7 @@ describe("authorization interactions", () => {
         scopes: ["openid"],
         resource: "resource-id",
       }),
-      getClient: vi.fn().mockResolvedValue({ id: "client-id" }),
+      getClient: vi.fn().mockResolvedValue({ id: "client-id", organizations }),
     } as unknown as OAuthService;
     const authorizationApp = createApp(
       config,
@@ -573,7 +582,11 @@ describe("authorization interactions", () => {
       headers: { Cookie: "basis_bridge_id=valid-interaction" },
     });
 
-    expect(await response.json()).toMatchObject({ prompt: "consent" });
+    expect(await response.json()).toMatchObject({
+      prompt: "consent",
+      client: { id: "client-id" },
+      organizations,
+    });
   });
 
   it("reuses a valid interaction cookie", async () => {
@@ -681,7 +694,7 @@ describe("authorization interactions", () => {
     const oauth = {
       interaction: vi.fn().mockResolvedValue({
         request: { id: "request-id", initialUri: "/oauth/authorize?client_id=client&state=state" },
-        client: { loginTypes: ["COMMON"] },
+        client: { organizations: [{ id: "organization-record-id" }] },
       }),
       attachUser: vi.fn().mockResolvedValue(undefined),
     } as unknown as OAuthService;
@@ -689,7 +702,7 @@ describe("authorization interactions", () => {
       callback: vi.fn().mockResolvedValue({
         authorizationRequestId: "request-id",
         user: { id: "user-id", email: "user@example.test", disabled: false },
-        loginType: "COMMON",
+        organization: { id: "organization-record-id" },
       }),
     } as unknown as MicrosoftService;
     const authorizationApp = createApp(
@@ -717,7 +730,7 @@ describe("authorization interactions", () => {
         client: {
           filterMode: "whitelist",
           filterContent: ["allowed@example.test"],
-          loginTypes: ["COMMON"],
+          organizations: [{ id: "organization-record-id" }],
         },
       }),
       getAuthorization: vi.fn().mockResolvedValue({ initialUri: "/oauth/authorize?client_id=client" }),
@@ -728,7 +741,7 @@ describe("authorization interactions", () => {
       callback: vi.fn().mockResolvedValue({
         authorizationRequestId: "request-id",
         user: { id: "user-id", email: "blocked@example.test", disabled: false },
-        loginType: "COMMON",
+        organization: { id: "organization-record-id" },
       }),
     } as unknown as MicrosoftService;
     const authorizationApp = createApp(
@@ -746,6 +759,46 @@ describe("authorization interactions", () => {
 
     expect(response.status).toBe(303);
     expect(response.headers.get("location")).toBe("/oauth/authorize?client_id=client");
+    expect(response.headers.get("set-cookie")).toContain("basis_bridge_error=");
+    expect(sessions.create).not.toHaveBeenCalled();
+    expect(oauth.attachUser).not.toHaveBeenCalled();
+  });
+
+  it("blocks a Microsoft account from an organization not linked to the client", async () => {
+    const oauth = {
+      interaction: vi.fn().mockResolvedValue({
+        request: { id: "request-id" },
+        client: {
+          filterMode: null,
+          filterContent: [],
+          organizations: [{ id: "allowed-organization" }],
+        },
+      }),
+      getAuthorization: vi.fn().mockResolvedValue({ initialUri: "/oauth/authorize?client_id=client" }),
+      attachUser: vi.fn(),
+    } as unknown as OAuthService;
+    const sessions = { create: vi.fn() } as unknown as SessionService;
+    const microsoft = {
+      callback: vi.fn().mockResolvedValue({
+        authorizationRequestId: "request-id",
+        user: { id: "user-id", email: "user@example.test", disabled: false },
+        organization: { id: "other-organization" },
+      }),
+    } as unknown as MicrosoftService;
+    const authorizationApp = createApp(
+      config,
+      oauth,
+      { publicJwks: { keys: [] } } as unknown as KeyService,
+      sessions,
+      {} as IdentityService,
+      microsoft,
+    );
+
+    const response = await authorizationApp.request("/oauth/callback/microsoft?code=code&state=state", {
+      headers: { Cookie: "basis_bridge_id=valid-interaction" },
+    });
+
+    expect(response.status).toBe(303);
     expect(response.headers.get("set-cookie")).toContain("basis_bridge_error=");
     expect(sessions.create).not.toHaveBeenCalled();
     expect(oauth.attachUser).not.toHaveBeenCalled();

@@ -3,7 +3,7 @@ import type { AppConfig } from "../config.js";
 import type { IdentityService } from "../identity.js";
 import type { KeyService } from "./keys.js";
 import { createOAuthService, oauthServiceInternals } from "./service.js";
-import { resourceServers } from "../database/schema.js";
+import { oidcClientOrganizations, resourceServers } from "../database/schema.js";
 import { hashClientSecret } from "../database/seed.js";
 
 const metadata = {
@@ -12,6 +12,18 @@ const metadata = {
   public: false,
   scopes: ["openid"],
 };
+
+const organization = {
+  id: "ca6a1bd8-7015-42ee-84ba-7ba67f2b0f73",
+  organizationId: "cbc6e1e2-a6bb-4002-bbdc-6da892a051a7",
+  firstParty: true,
+  createdAt: new Date("2026-01-01T00:00:00Z"),
+  updatedAt: new Date("2026-01-01T00:00:00Z"),
+};
+
+function organizationQuery() {
+  return { innerJoin: () => ({ where: () => [organization] }) };
+}
 
 describe("stored client metadata", () => {
   it("retains descriptive permission definitions", () => {
@@ -56,7 +68,6 @@ describe("client lookup", () => {
     requireConsent: false,
     filterMode: null,
     filterContent: ["allowed@example.test"],
-    loginTypes: ["FIRST_PARTY"],
     metadata: {
       name: "Portal",
       owners: [{ id: "c6ba1588-03bb-4c61-a4e1-3c7c82e919b5", role: "role.ADMIN" }],
@@ -68,7 +79,7 @@ describe("client lookup", () => {
   const execute = vi.fn(async () => [clientRow]);
   const db = {
     select: () => ({
-      from: () => ({
+      from: (table: unknown) => table === oidcClientOrganizations ? organizationQuery() : ({
         where: () => ({
           limit: () => ({
             prepare: () => ({ execute }),
@@ -89,11 +100,11 @@ describe("client lookup", () => {
     {} as IdentityService,
   );
 
-  it("returns only the id and name to the frontend", async () => {
+  it("returns the id, name, and linked organizations to the frontend", async () => {
     await expect(service.getClient("client-1")).resolves.toEqual({
       id: "client-1",
       name: "Portal",
-      loginTypes: ["FIRST_PARTY"],
+      organizations: [organization],
     });
   });
 
@@ -106,7 +117,9 @@ describe("client lookup", () => {
   it("throws when the client does not exist", async () => {
     const missing = vi.fn(async () => []);
     const missingDb = {
-      select: () => ({ from: () => ({ where: () => ({ limit: () => ({ prepare: () => ({ execute: missing }) }) }) }) }),
+      select: () => ({ from: (table: unknown) => table === oidcClientOrganizations
+        ? organizationQuery()
+        : ({ where: () => ({ limit: () => ({ prepare: () => ({ execute: missing }) }) }) }) }),
     } as unknown as Parameters<typeof createOAuthService>[1];
     const missingService = createOAuthService(config, missingDb, {} as KeyService, {} as IdentityService);
     await expect(missingService.getClient("missing")).rejects.toThrow("not registered or has been disabled");
@@ -121,7 +134,6 @@ describe("authorization resource check", () => {
     requireConsent: false,
     filterMode: null,
     filterContent: [],
-    loginTypes: ["FIRST_PARTY"],
     metadata: {
       name: "Portal",
       owners: [{ id: "c6ba1588-03bb-4c61-a4e1-3c7c82e919b5", role: "role.ADMIN" }],
@@ -133,7 +145,7 @@ describe("authorization resource check", () => {
   const execute = vi.fn(async () => [clientRow]);
   const db = {
     select: () => ({
-      from: (table: unknown) => ({
+      from: (table: unknown) => table === oidcClientOrganizations ? organizationQuery() : ({
         where: () => ({
           limit: () => (table === resourceServers ? [] : { prepare: () => ({ execute }) }),
         }),
@@ -172,7 +184,7 @@ describe("authorization resource check", () => {
     const clientExecute = vi.fn(async () => [publicScopeClient]);
     const dbWithPublicScopes = {
       select: () => ({
-        from: (table: unknown) => ({
+        from: (table: unknown) => table === oidcClientOrganizations ? organizationQuery() : ({
           where: () => ({
             limit: () => table === resourceServers
               ? [{ audience: "urn:basis:api:test", scopes: [] }]
@@ -221,7 +233,7 @@ describe("authorization resource check", () => {
     const insertValues = vi.fn(async () => undefined);
     const ephemeralDb = {
       select: () => ({
-        from: (table: unknown) => ({
+        from: (table: unknown) => table === oidcClientOrganizations ? organizationQuery() : ({
           where: () => ({
             limit: () => table === resourceServers
               ? [{ audience: "urn:basis:api:test", scopes: [] }]
@@ -313,7 +325,6 @@ describe("client credentials grant", () => {
       requireConsent: false,
       filterMode: null,
       filterContent: [],
-      loginTypes: ["FIRST_PARTY"],
       metadata: {
         name: "Application",
         owners: [{ id: "c6ba1588-03bb-4c61-a4e1-3c7c82e919b5", role: "role.ADMIN" }],
@@ -326,7 +337,7 @@ describe("client credentials grant", () => {
     const execute = vi.fn(async () => [clientRow]);
     const db = {
       select: () => ({
-        from: (table: unknown) => ({
+        from: (table: unknown) => table === oidcClientOrganizations ? organizationQuery() : ({
           where: () => ({
             limit: () => table === resourceServers
               ? [{ audience: "urn:basis:api:projects", scopes: ["projects.read"] }]

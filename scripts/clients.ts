@@ -2,9 +2,10 @@ import "dotenv/config";
 import { randomBytes } from "node:crypto";
 import { stdin as input, stdout as output } from "node:process";
 import { createInterface, type Interface } from "node:readline/promises";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import {
   clientInputSchema,
+  DEFAULT_ORGANIZATION_ID,
   isEphemeralLocalhostRedirectUri,
   permissionDefinitionsSchema,
   type ClientSeed,
@@ -17,8 +18,7 @@ import {
   type ClientOwner,
   type StoredClientMetadata,
 } from "../src/database/seed.js";
-import { oidcClients, resourceServers } from "../src/database/schema.js";
-import { loginTypes, type LoginType } from "../src/loginTypes.js";
+import { oidcClientOrganizations, oidcClients, organizations, resourceServers } from "../src/database/schema.js";
 
 // ponytail: stdlib readline TUI; no prompt dependency.
 // Runtime visibility (see src/oauth/service.ts, src/oauth/clientCache.ts):
@@ -75,11 +75,15 @@ export interface ListedClient {
   redirectUris: string[];
   resources: string[];
   permissionDefinitionCount: number;
-  loginTypes: LoginType[];
+  organizationIds: string[];
 }
 
 export async function listClients(db: Database): Promise<ListedClient[]> {
   const rows = await db.select().from(oidcClients);
+  const links = await db
+    .select({ clientId: oidcClientOrganizations.clientId, organizationId: organizations.organizationId })
+    .from(oidcClientOrganizations)
+    .innerJoin(organizations, eq(oidcClientOrganizations.organizationId, organizations.id));
   return rows
     .map((row) => {
       const metadata = row.metadata as Partial<StoredClientMetadata>;
@@ -90,7 +94,9 @@ export async function listClients(db: Database): Promise<ListedClient[]> {
         redirectUris: metadata.redirectUris ?? [],
         resources: row.resources ?? [],
         permissionDefinitionCount: Object.keys(metadata.permissions ?? {}).length,
-        loginTypes: row.loginTypes,
+        organizationIds: links
+          .filter((link) => link.clientId === row.clientId)
+          .map((link) => link.organizationId),
       };
     })
     .sort((a, b) => a.name.localeCompare(b.name));
@@ -115,7 +121,7 @@ export function printClients(clients: ListedClient[], known: Set<string>): void 
     if (client.redirectUris.length) process.stdout.write(`   redirects: ${client.redirectUris.join(", ")}\n`);
     if (client.resources.length) process.stdout.write(`   resources: ${client.resources.join(", ")}\n`);
     process.stdout.write(`   permission definitions: ${client.permissionDefinitionCount}\n`);
-    process.stdout.write(`   login types: ${client.loginTypes.join(", ")}\n`);
+    process.stdout.write(`   organizations: ${client.organizationIds.join(", ")}\n`);
     const missing = client.resources.filter((audience) => !known.has(audience));
     if (missing.length) {
       process.stdout.write(
@@ -210,15 +216,14 @@ async function promptFilterMode(rl: Interface, initial: string): Promise<"whitel
   }
 }
 
-async function promptLoginTypes(rl: Interface, initial: LoginType[]): Promise<LoginType[]> {
+async function promptOrganizationIds(rl: Interface, initial: string[]): Promise<string[]> {
   for (;;) {
-    const values = splitList(await ask(rl, "Login types (comma-separated)", initial.join(", ")))
-      .map((value) => value.toUpperCase());
-    const invalid = values.filter((value) => !loginTypes.includes(value as LoginType));
-    if (!values.length) process.stdout.write("At least one login type is required.\n");
-    else if (invalid.length) process.stdout.write(`Invalid login type(s): ${invalid.join(", ")}\n`);
-    else if (new Set(values).size !== values.length) process.stdout.write("Login types must be unique.\n");
-    else return values as LoginType[];
+    const values = splitList(await ask(rl, "Organization IDs (comma-separated)", initial.join(", ")));
+    const invalid = values.filter((value) => !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value));
+    if (!values.length) process.stdout.write("At least one organization ID is required.\n");
+    else if (invalid.length) process.stdout.write(`Invalid organization ID(s): ${invalid.join(", ")}\n`);
+    else if (new Set(values).size !== values.length) process.stdout.write("Organization IDs must be unique.\n");
+    else return values;
   }
 }
 
@@ -246,14 +251,14 @@ function printClientSummary(input: {
   requireConsent: boolean;
   filterMode: "whitelist" | "blacklist" | null;
   filterContent: string[];
-  loginTypes: LoginType[];
+  organizationIds: string[];
 }): void {
   process.stdout.write(
     `\nName: ${input.name ?? "(none)"}\nType: ${input.public ? "public" : "confidential"}\n` +
       `Redirects: ${input.redirectUris.join(", ")}\nResources: ${input.resources.join(", ")}\n` +
       `Scopes: ${input.scopes.join(", ")}\nConsent: ${input.requireConsent ? "shown" : "skipped"}\n` +
       `Permission definitions: ${Object.keys(input.permissions).length}\n` +
-      `Login types: ${input.loginTypes.join(", ")}\n` +
+      `Organizations: ${input.organizationIds.join(", ")}\n` +
       `Filter: ${input.filterMode ?? "none"}${input.filterContent.length ? ` (${input.filterContent.join(", ")})` : ""}\n`,
   );
 }
@@ -287,7 +292,7 @@ export async function promptNewClient(rl: Interface, audiences: string[]): Promi
   const requireConsent = await askYesNo(rl, "Show consent screen?", true);
   const filterMode = await promptFilterMode(rl, "");
   const filterContent = filterMode ? splitList(await ask(rl, "Filter emails (comma-separated)")) : [];
-  const selectedLoginTypes = await promptLoginTypes(rl, ["FIRST_PARTY"]);
+  const organizationIds = await promptOrganizationIds(rl, [DEFAULT_ORGANIZATION_ID]);
 
   const input = clientInputSchema.parse({
     ...(name ? { name } : {}),
@@ -300,7 +305,7 @@ export async function promptNewClient(rl: Interface, audiences: string[]): Promi
     requireConsent,
     filterMode,
     filterContent,
-    loginTypes: selectedLoginTypes,
+    organizationIds,
   });
 
   printClientSummary(input);
@@ -390,7 +395,7 @@ export interface ClientDetail {
   filterMode: "whitelist" | "blacklist" | null;
   filterContent: string[];
   owners: ClientOwner[];
-  loginTypes: LoginType[];
+  organizationIds: string[];
 }
 
 export async function getClientDetail(db: Database, clientId: string): Promise<ClientDetail> {
@@ -410,7 +415,12 @@ export async function getClientDetail(db: Database, clientId: string): Promise<C
     filterMode: row.filterMode ?? null,
     filterContent: row.filterContent ?? [],
     owners: metadata.owners ?? [],
-    loginTypes: row.loginTypes,
+    organizationIds: (await db
+      .select({ organizationId: organizations.organizationId })
+      .from(oidcClientOrganizations)
+      .innerJoin(organizations, eq(oidcClientOrganizations.organizationId, organizations.id))
+      .where(eq(oidcClientOrganizations.clientId, clientId)))
+      .map((organization) => organization.organizationId),
   };
 }
 
@@ -425,7 +435,7 @@ export interface EditedClient {
   requireConsent: boolean;
   filterMode: "whitelist" | "blacklist" | null;
   filterContent: string[];
-  loginTypes: LoginType[];
+  organizationIds: string[];
   resourceScopes: Map<string, string[]>;
 }
 
@@ -468,7 +478,7 @@ export async function promptEditClient(
   const filterMode = await promptFilterMode(rl, current.filterMode ?? "");
   const filterDefault = filterMode === current.filterMode ? current.filterContent.join(", ") : "";
   const filterContent = filterMode ? splitList(await ask(rl, "Filter emails (comma-separated)", filterDefault)) : [];
-  const selectedLoginTypes = await promptLoginTypes(rl, current.loginTypes);
+  const organizationIds = await promptOrganizationIds(rl, current.organizationIds);
 
   const input = clientInputSchema.parse({
     name,
@@ -481,7 +491,7 @@ export async function promptEditClient(
     requireConsent,
     filterMode,
     filterContent,
-    loginTypes: selectedLoginTypes,
+    organizationIds,
   });
 
   printClientSummary(input);
@@ -517,6 +527,13 @@ export async function applyClientEdit(db: Database, clientId: string, edit: Edit
     db,
     edit.resources.map((audience) => ({ audience, scopes: edit.resourceScopes.get(audience) ?? [] })),
   );
+  const linkedOrganizations = await db
+    .select({ id: organizations.id })
+    .from(organizations)
+    .where(inArray(organizations.organizationId, edit.organizationIds));
+  if (linkedOrganizations.length !== edit.organizationIds.length) {
+    throw new Error("One or more organizations do not exist");
+  }
   await db
     .update(oidcClients)
     .set({
@@ -526,10 +543,13 @@ export async function applyClientEdit(db: Database, clientId: string, edit: Edit
       requireConsent: edit.requireConsent,
       filterMode: edit.filterMode,
       filterContent: edit.filterContent,
-      loginTypes: edit.loginTypes,
       updatedAt: new Date(),
     })
     .where(eq(oidcClients.clientId, clientId));
+  await db.delete(oidcClientOrganizations).where(eq(oidcClientOrganizations.clientId, clientId));
+  await db.insert(oidcClientOrganizations).values(
+    linkedOrganizations.map((organization) => ({ clientId, organizationId: organization.id })),
+  );
   return rotatedSecret;
 }
 

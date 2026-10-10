@@ -1,9 +1,9 @@
 import { promisify } from "node:util";
 import { randomBytes, scrypt as scryptCallback, timingSafeEqual } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import type { ClientSeed, PermissionDefinitions, ResourceSeed } from "../config.js";
 import type { Database } from "./client.js";
-import { oidcClients, resourceServers } from "./schema.js";
+import { oidcClientOrganizations, oidcClients, organizations, resourceServers } from "./schema.js";
 
 const scrypt = promisify(scryptCallback);
 const defaultClientOwnerId = "c6ba1588-03bb-4c61-a4e1-3c7c82e919b5";
@@ -53,6 +53,15 @@ export async function seedConfiguration(
   }
 
   for (const client of clients) {
+    const linkedOrganizations = await db
+      .select({ id: organizations.id, organizationId: organizations.organizationId })
+      .from(organizations)
+      .where(inArray(organizations.organizationId, client.organizationIds));
+    if (linkedOrganizations.length !== client.organizationIds.length) {
+      const found = new Set(linkedOrganizations.map((organization) => organization.organizationId));
+      const missing = client.organizationIds.filter((organizationId) => !found.has(organizationId));
+      throw new Error(`Client ${client.clientId} references unknown organization(s): ${missing.join(", ")}`);
+    }
     const metadata: StoredClientMetadata = {
       name: client.name ?? client.clientId,
       owners: [{ id: defaultClientOwnerId, role: "role.ADMIN" }],
@@ -82,7 +91,6 @@ export async function seedConfiguration(
         requireConsent: client.requireConsent,
         filterMode: client.filterMode,
         filterContent: client.filterContent,
-        loginTypes: client.loginTypes,
       })
       .onConflictDoUpdate({
         target: oidcClients.clientId,
@@ -93,9 +101,15 @@ export async function seedConfiguration(
           requireConsent: client.requireConsent,
           filterMode: client.filterMode,
           filterContent: client.filterContent,
-          loginTypes: client.loginTypes,
           updatedAt: new Date(),
         },
       });
+    await db.delete(oidcClientOrganizations).where(eq(oidcClientOrganizations.clientId, client.clientId));
+    await db.insert(oidcClientOrganizations).values(
+      linkedOrganizations.map((organization) => ({
+        clientId: client.clientId,
+        organizationId: organization.id,
+      })),
+    );
   }
 }
