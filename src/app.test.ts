@@ -277,7 +277,7 @@ describe("SSO account API", () => {
     {} as OAuthService,
     { publicJwks: { keys: [] } } as unknown as KeyService,
     { find: vi.fn((token?: string) => (token ? { userId: user.id, expiresAt: loginExpiresAt } : undefined)) } as unknown as SessionService,
-    { findUser: vi.fn().mockResolvedValue(user) } as unknown as IdentityService,
+    { findUser: vi.fn((userId: string) => userId === user.id ? user : undefined) } as unknown as IdentityService,
     {} as MicrosoftService,
   );
 
@@ -296,26 +296,16 @@ describe("SSO account API", () => {
     });
   });
 
-  it("streams a stored profile picture only to the authenticated owner", async () => {
-    const response = await accountApp.request(`/api/picture/${user.id}`, {
-      headers: { Cookie: "basis_sso=session-token" },
-    });
+  it("publicly streams a stored profile picture", async () => {
+    const response = await accountApp.request(`/api/picture/${user.id}`);
     expect(response.status).toBe(200);
     expect(response.headers.get("cross-origin-resource-policy")).toBe("same-site");
     expect(response.headers.get("content-type")).toContain("image/png");
     expect(Buffer.from(await response.arrayBuffer())).toEqual(user.picture);
   });
 
-  it("refuses profile pictures without an SSO session", async () => {
-    const response = await accountApp.request(`/api/picture/${user.id}`);
-    expect(response.status).toBe(404);
-    expect(await response.json()).toEqual({ error: "not_found" });
-  });
-
-  it("refuses profile pictures for a different user", async () => {
-    const response = await accountApp.request("/api/picture/different-user-id", {
-      headers: { Cookie: "basis_sso=session-token" },
-    });
+  it("returns not found when a public profile picture does not exist", async () => {
+    const response = await accountApp.request("/api/picture/different-user-id");
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({ error: "not_found" });
   });
@@ -326,6 +316,54 @@ describe("discovery caching", () => {
     const response = await app.request("/.well-known/openid-configuration");
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toContain("max-age=300");
+  });
+});
+
+describe("public client information", () => {
+  it("returns only the public client fields", async () => {
+    const owners = [{
+      id: "owner-id",
+      name: "Owner Name",
+      email: "owner@example.test",
+      picture: "/api/picture/owner-id",
+    }];
+    const oauth = {
+      getClientInformation: vi.fn().mockResolvedValue({ id: "client-id", name: "Example app", owners }),
+    } as unknown as OAuthService;
+    const clientApp = createApp(
+      config,
+      oauth,
+      { publicJwks: { keys: [] } } as unknown as KeyService,
+      {} as SessionService,
+      {} as IdentityService,
+      {} as MicrosoftService,
+    );
+
+    const response = await clientApp.request("/oauth/clients/client-id");
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ id: "client-id", name: "Example app", owners });
+    expect(oauth.getClientInformation).toHaveBeenCalledWith("client-id");
+  });
+
+  it("returns not found for an unknown client", async () => {
+    const clientApp = createApp(
+      config,
+      {
+        getClientInformation: vi.fn().mockRejectedValue(
+          new OAuthError("invalid_request", "Client not found", 404, 14001),
+        ),
+      } as unknown as OAuthService,
+      { publicJwks: { keys: [] } } as unknown as KeyService,
+      {} as SessionService,
+      {} as IdentityService,
+      {} as MicrosoftService,
+    );
+
+    const response = await clientApp.request("/oauth/clients/missing");
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toMatchObject({ error: "invalid_request" });
   });
 });
 
@@ -554,11 +592,6 @@ describe("authorization interactions", () => {
   });
 
   it("identifies authenticated interactions as consent pages", async () => {
-    const organizations = [{
-      id: "organization-record-id",
-      organizationId: "cbc6e1e2-a6bb-4002-bbdc-6da892a051a7",
-      firstParty: true,
-    }];
     const oauth = {
       getAuthorization: vi.fn().mockResolvedValue({
         id: "request-id",
@@ -567,7 +600,6 @@ describe("authorization interactions", () => {
         scopes: ["openid"],
         resource: "resource-id",
       }),
-      getClient: vi.fn().mockResolvedValue({ id: "client-id", organizations }),
     } as unknown as OAuthService;
     const authorizationApp = createApp(
       config,
@@ -582,11 +614,13 @@ describe("authorization interactions", () => {
       headers: { Cookie: "basis_bridge_id=valid-interaction" },
     });
 
-    expect(await response.json()).toMatchObject({
+    const body = await response.json();
+    expect(body).toMatchObject({
       prompt: "consent",
-      client: { id: "client-id" },
-      organizations,
+      clientId: "client-id",
     });
+    expect(body).not.toHaveProperty("client");
+    expect(body).not.toHaveProperty("organizations");
   });
 
   it("reuses a valid interaction cookie", async () => {
@@ -690,11 +724,55 @@ describe("authorization interactions", () => {
     expect(oauth.startAuthorization).not.toHaveBeenCalled();
   });
 
+  it("renders the client filter error when an existing SSO session is blocked", async () => {
+    const oauth = {
+      startAuthorization: vi.fn().mockRejectedValue(
+        new OAuthError("access_denied", "This account is not allowed to sign in to this application.", 403),
+      ),
+    } as unknown as OAuthService;
+    const authorizationApp = createApp(
+      config,
+      oauth,
+      { publicJwks: { keys: [] } } as unknown as KeyService,
+      {
+        find: vi.fn().mockResolvedValue({
+          userId: "user-id",
+          authenticatedAt: new Date("2026-01-01T00:00:00Z"),
+        }),
+      } as unknown as SessionService,
+      {} as IdentityService,
+      {} as MicrosoftService,
+    );
+
+    const response = await authorizationApp.request("/oauth/authorize?client_id=client", {
+      headers: { Cookie: "basis_sso=valid-session" },
+    });
+
+    expect(response.status).toBe(200);
+    expect(oauth.startAuthorization).toHaveBeenCalledWith(expect.objectContaining({
+      session: {
+        userId: "user-id",
+        authenticatedAt: new Date("2026-01-01T00:00:00Z"),
+      },
+    }));
+    const errorCookie = response.headers.get("set-cookie")?.match(/basis_bridge_error=([^;]+)/)?.[1];
+    expect(errorCookie).toBeDefined();
+    expect(JSON.parse(atob(decodeURIComponent(errorCookie!)))).toMatchObject({
+      error: "access_denied",
+      error_description: "This account is not allowed to sign in to this application.",
+      status: 403,
+    });
+  });
+
   it("redirects back to authorize after Microsoft login", async () => {
     const oauth = {
       interaction: vi.fn().mockResolvedValue({
         request: { id: "request-id", initialUri: "/oauth/authorize?client_id=client&state=state" },
-        client: { organizations: [{ id: "organization-record-id" }] },
+        client: {
+          filterMode: null,
+          filterContent: [],
+          organizations: [{ id: "organization-record-id" }],
+        },
       }),
       attachUser: vi.fn().mockResolvedValue(undefined),
     } as unknown as OAuthService;

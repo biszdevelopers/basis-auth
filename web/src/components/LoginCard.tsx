@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { ArrowRight, Building, Check, CircleAlert, CircleQuestionMark, ExternalLink } from "lucide-react";
+import { ArrowRight, Building, Check, CircleAlert, CircleQuestionMark, ExternalLink, User } from "lucide-react";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "./ui/card";
 import { Spinner } from "./ui/spinner";
 import { Fade } from "./ui/fade";
@@ -12,6 +12,7 @@ import { HoverCard, HoverCardContent, HoverCardTrigger } from "./ui/hover-card";
 import { Profile } from "./Profile";
 import { useToast } from "./ui/toast";
 import { describeScopes, type ScopeDescription } from "@/lib/scope-description";
+import { ApplicationOwners, type ApplicationOwner } from "./ApplicationOwners";
 
 export interface StatusError {
     status: number;
@@ -27,10 +28,16 @@ export interface Status {
     login?: AuthorizeSession;
 }
 
+export interface PublicClientInformation {
+    id: string;
+    name: string;
+    owners: ApplicationOwner[];
+}
+
 export interface AuthorizeSession {
       uid: string;
       prompt: "login" | "consent";
-      client: { id: string; name: string; loginTypes: ("FIRST_PARTY" | "THIRD_PARTY" | "COMMON")[] },
+      clientId: string;
       scopes: string[],
       resources: string[],
       accountId: string,
@@ -44,10 +51,12 @@ function showAcceptedLoginTypes() {
 
 export function LoginCard({
     stat,
+    client,
     onLogout,
     onProfileReady,
 }: {
     stat: Status;
+    client?: PublicClientInformation;
     onLogout: () => Promise<void>;
     onProfileReady: () => void;
 }) {
@@ -58,9 +67,8 @@ export function LoginCard({
     const scopes = describeScopes(stat.login?.scopes ?? []);
     const visibleScopes = scopes.length > 3 ? scopes.slice(0, 2) : scopes;
     const hiddenScopes = scopes.length > 3 ? scopes.slice(2) : [];
-    const allowedLoginTypes = stat.login?.client.loginTypes ?? ["FIRST_PARTY"];
-    const allowsCommon = allowedLoginTypes.includes("COMMON");
-    const firstPartyOnly = allowedLoginTypes.length === 1 && allowedLoginTypes[0] === "FIRST_PARTY";
+    const allowsCommon = false;
+    const firstPartyOnly = true;
 
     const scopeItem = (scope: ScopeDescription) => (
         <li key={scope.scope} className={cn(" text-foreground flex items-center gap-2")}>
@@ -160,6 +168,11 @@ export function LoginCard({
         console.log("status changed", stat);
     }, [stat]);
 
+    useEffect(() => {
+        if (!stat.error) return;
+        console.error(`${stat.error.error_description} (${stat.error.code})`);
+    }, [stat.error]);
+
     return (
         <Card className="relative m-0 h-dvh w-full overflow-y-auto rounded-none shadow-none ring-0 sm:m-auto sm:h-80 sm:w-80 sm:overflow-hidden sm:rounded-2xl sm:shadow-md sm:ring-1">
             <Fade show={stat.loading} onExited={loadingFinishedExiting}>
@@ -184,19 +197,36 @@ export function LoginCard({
 
                             <div>
                                 {stat.error.error === "access_denied" ? (
-                                    <Label className="text-sm">Your account is not allowed to sign in to this application. Contact the application provider for assistance.</Label>
+                                    <p className="text-sm">Your account is not allowed to sign in to this application. Contact the
+                                    {" "}
+                                    <HoverCard openDelay={200} closeDelay={200}>
+                                        <HoverCardTrigger asChild>
+                                            <button type="button" className="text-primary inline">
+                                                <User className="size-4 inline"/>
+                                                {" "}application provider
+                                            </button>
+                                        </HoverCardTrigger>
+                                        <HoverCardContent className="p-0"><ApplicationOwners owners={client?.owners ?? []} /></HoverCardContent></HoverCard>
+                                    {" "}
+                                    for assistance.</p>
                                 ) : (
+                                    <>
                                     <Label className="text-sm">Your request could not be completed because an error had occured. This is likely not your fault.</Label>
+                                    <Label className="text-sm mt-4">Head back to {client?.name ?? "the application"} and try starting the login process again.</Label>
+                                    </>
                                 )}
-                                <br></br>
-                                <Label className="text-sm text-muted-foreground">{stat.error.error_description} ({stat.error.code})</Label>
                             </div>
+                            {stat.error.error === "access_denied" && (
+                                <Button disabled={Boolean(hold)} onClick={logout}>
+                                    {hold === "logout" ? <Spinner /> : "Log out and switch an account"}
+                                </Button>
+                            )}
                         </div>
                     )}
                     {stat.page == "login" && (
                         <div className="flex flex-col gap-2 justify-between mt-4 sm:mt-0">
 
-                        <Label className="mt-2">Sign in to<Label className="text-devconnect">{stat.login?.client.name}</Label></Label>
+                        <Label className="mt-2">Sign in to<Label className="text-devconnect">{client?.name ?? "this application"}</Label></Label>
                         <Label className="text-muted-foreground">with the only method below</Label>
                         
                         <Button className="gap-2" disabled={Boolean(hold)} onClick={visitMicrosoft}>
@@ -242,7 +272,7 @@ export function LoginCard({
                                 onLogout={logout}
                                 onReady={onProfileReady}
                             />
-                            <Label className="mt-4 sm:mt-2">Allow <Label className="text-devconnect">{stat.login?.client.name}</Label> to...</Label>
+                            <Label className="mt-4 sm:mt-2">Allow <Label className="text-devconnect">{client?.name ?? "this application"}</Label> to...</Label>
                             <ul className="space-y-1">
                             {visibleScopes.map(scopeItem)}
                             {hiddenScopes.length > 0 && (
@@ -276,7 +306,7 @@ export function LoginCard({
                     
 
                     <div className="hover:underline underline-offset-2 flex gap-1 cursor-pointer text-devconnect items-center">
-                        <a className="text-xs" href={"https://bisz.dev/DevConnectAbuse?ref=" + stat.login?.client?.id } target="_blank">Report Abuse</a>
+                        <a className="text-xs" href={"https://bisz.dev/DevConnectAbuse?ref=" + (client?.id ?? "") } target="_blank">Report Abuse</a>
                         <ExternalLink className="size-3"></ExternalLink>
                     </div>
                     
@@ -294,7 +324,7 @@ export function LoginCard({
                         <HoverCardContent className="flex flex-col gap-4">
                             <p>
                                 <span className="font-mono text-devconnect glow pr-1">DevConnect</span>
-                                is used as a SSO (<a className="hover:underline underline-offset-2 text-devconnect" href="https://bisz.dev/DevConnect">Single Sign-On</a>) service proxy{stat.login && <> by<span className="text-devconnect px-1">{stat.login?.client.name}</span></>} to request basischina-related services and information (such as your school email and teams username).
+                                is used as a SSO (<a className="hover:underline underline-offset-2 text-devconnect" href="https://bisz.dev/DevConnect">Single Sign-On</a>) service proxy{client && <> by<span className="text-devconnect px-1">{client.name}</span></>} to request basischina-related services and information (such as your school email and teams username).
                             </p>
                             <p>
                                 This allows student and personal applications to link with your school account

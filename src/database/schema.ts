@@ -83,6 +83,11 @@ export const userPermissions = pgTable(
   (table) => [primaryKey({ columns: [table.userId, table.permission] })],
 );
 
+export const defaultPermissions = pgTable("default_permissions", {
+  permission: text("permission").primaryKey(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const oidcClients = pgTable(
   "oidc_clients",
   {

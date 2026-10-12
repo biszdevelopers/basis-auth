@@ -61,6 +61,9 @@ describe("stored client metadata", () => {
 });
 
 describe("client lookup", () => {
+  const ownerOneId = "c6ba1588-03bb-4c61-a4e1-3c7c82e919b5";
+  const missingOwnerId = "b6ba1588-03bb-4c61-a4e1-3c7c82e919b5";
+  const ownerTwoId = "a6ba1588-03bb-4c61-a4e1-3c7c82e919b5";
   const clientRow = {
     clientId: "client-1",
     secretHash: "stored-secret-hash",
@@ -70,7 +73,11 @@ describe("client lookup", () => {
     filterContent: ["allowed@example.test"],
     metadata: {
       name: "Portal",
-      owners: [{ id: "c6ba1588-03bb-4c61-a4e1-3c7c82e919b5", role: "role.ADMIN" }],
+      owners: [
+        { id: ownerOneId, role: "role.ADMIN" },
+        { id: missingOwnerId, role: "role.GENERAL" },
+        { id: ownerTwoId, role: "role.GENERAL" },
+      ],
       redirectUris: ["https://portal.example.test/callback"],
       public: false,
       scopes: ["openid"],
@@ -93,24 +100,48 @@ describe("client lookup", () => {
     issuer: "https://auth.example.test",
     cookieKeys: ["a".repeat(32)],
   } as AppConfig;
+  const findUsersByIds = vi.fn().mockResolvedValue([
+    { id: ownerTwoId, displayName: null, email: "second@example.test", picture: null, pictureContentType: null },
+    {
+      id: ownerOneId,
+      displayName: "  First Owner  ",
+      email: "first@example.test",
+      picture: Buffer.from([1]),
+      pictureContentType: "image/png",
+    },
+  ]);
   const service = createOAuthService(
     config,
     db,
     {} as KeyService,
-    {} as IdentityService,
+    { findUsersByIds } as unknown as IdentityService,
   );
 
-  it("returns the id, name, and linked organizations to the frontend", async () => {
-    await expect(service.getClient("client-1")).resolves.toEqual({
+  it("returns ordered public metadata and omits missing owners", async () => {
+    await expect(service.getClientInformation("client-1")).resolves.toEqual({
       id: "client-1",
       name: "Portal",
-      organizations: [organization],
+      owners: [
+        {
+          id: ownerOneId,
+          name: "First Owner",
+          email: "first@example.test",
+          picture: `/api/picture/${ownerOneId}`,
+        },
+        {
+          id: ownerTwoId,
+          name: "second@example.test",
+          email: "second@example.test",
+          picture: null,
+        },
+      ],
     });
+    expect(findUsersByIds).toHaveBeenCalledWith([ownerOneId, missingOwnerId, ownerTwoId]);
   });
 
   it("serves repeated lookups from the in-memory cache", async () => {
-    await service.getClient("client-1");
-    await service.getClient("client-1");
+    await service.getClientInformation("client-1");
+    await service.getClientInformation("client-1");
     expect(execute).toHaveBeenCalledTimes(1);
   });
 
@@ -122,7 +153,10 @@ describe("client lookup", () => {
         : ({ where: () => ({ limit: () => ({ prepare: () => ({ execute: missing }) }) }) }) }),
     } as unknown as Parameters<typeof createOAuthService>[1];
     const missingService = createOAuthService(config, missingDb, {} as KeyService, {} as IdentityService);
-    await expect(missingService.getClient("missing")).rejects.toThrow("not registered or has been disabled");
+    await expect(missingService.getClientInformation("missing")).rejects.toMatchObject({
+      status: 404,
+      message: expect.stringContaining("not registered or has been disabled"),
+    });
   });
 });
 
@@ -215,6 +249,54 @@ describe("authorization resource check", () => {
         codeChallengeMethod: "S256",
       }),
     ).resolves.toMatchObject({ interactionToken: expect.any(String) });
+  });
+
+  it("rejects an existing session when the client filter blocks its email", async () => {
+    const filteredClient = {
+      ...clientRow,
+      resources: ["urn:basis:api:test"],
+      filterMode: "whitelist" as const,
+      filterContent: ["allowed@example.test"],
+    };
+    const clientExecute = vi.fn(async () => [filteredClient]);
+    const insertValues = vi.fn(async () => undefined);
+    const filteredDb = {
+      select: () => ({
+        from: (table: unknown) => table === oidcClientOrganizations ? organizationQuery() : ({
+          where: () => ({
+            limit: () => table === resourceServers
+              ? [{ audience: "urn:basis:api:test", scopes: [] }]
+              : { prepare: () => ({ execute: clientExecute }) },
+          }),
+        }),
+      }),
+      insert: () => ({ values: insertValues }),
+    } as unknown as Parameters<typeof createOAuthService>[1];
+    const identity = {
+      findUser: vi.fn().mockResolvedValue({ id: "user-id", email: "blocked@example.test" }),
+      organizationForUser: vi.fn(),
+    } as unknown as IdentityService;
+    const filteredService = createOAuthService(config, filteredDb, {} as KeyService, identity);
+
+    await expect(filteredService.startAuthorization({
+      initialUri: "/oauth/authorize?client_id=client-1",
+      clientId: "client-1",
+      redirectUri: "https://portal.example.test/callback",
+      responseType: "code",
+      scope: "openid",
+      resources: ["urn:basis:api:test"],
+      state: "state",
+      nonce: "nonce",
+      codeChallenge: "a".repeat(43),
+      codeChallengeMethod: "S256",
+      session: { userId: "user-id", authenticatedAt: new Date() },
+    })).rejects.toMatchObject({
+      error: "access_denied",
+      message: "This account is not allowed to sign in to this application.",
+      status: 403,
+    });
+    expect(insertValues).not.toHaveBeenCalled();
+    expect(identity.organizationForUser).not.toHaveBeenCalled();
   });
 
   it("stores the concrete redirect URI selected through a public ephemeral registration", async () => {

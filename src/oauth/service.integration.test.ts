@@ -5,7 +5,14 @@ import { createDatabase, type Database } from "../database/client.js";
 import { migrateDatabase } from "../database/migrate.js";
 import { seedConfiguration } from "../database/seed.js";
 import { createEmailDomainService } from "../database/emailDomains.js";
-import { emailDomainSuffixes, oidcClients, organizations, users } from "../database/schema.js";
+import {
+  defaultPermissions,
+  emailDomainSuffixes,
+  oidcClients,
+  organizations,
+  userPermissions,
+  users,
+} from "../database/schema.js";
 import { createIdentityService, type IdentityService } from "../identity.js";
 import { createKeyService, type KeyService } from "./keys.js";
 import { createOAuthService, type OAuthService } from "./service.js";
@@ -53,7 +60,7 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
     close = () => database.pool.end();
     await seedConfiguration(db, config.clients, config.resources);
     emailDomains = createEmailDomainService(db);
-    identity = createIdentityService(db, emailDomains, "participant", []);
+    identity = createIdentityService(db, emailDomains, []);
     keys = await createKeyService(config, identity);
     oauth = createOAuthService(config, db, keys, identity);
   }, 120_000);
@@ -74,6 +81,19 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
       ],
       permissions: { "nethack.Projects.read.all": "View all projects" },
     });
+  });
+
+  it("stores participant as a global default instead of a per-user grant", async () => {
+    const defaults = await db.select().from(defaultPermissions);
+    expect(defaults).toEqual(expect.arrayContaining([
+      expect.objectContaining({ permission: "participant" }),
+    ]));
+
+    const personalDefaults = await db
+      .select()
+      .from(userPermissions)
+      .where(eq(userPermissions.permission, "participant"));
+    expect(personalDefaults).toEqual([]);
   });
 
   it("seeds domains and clears user links when a suffix is deleted", async () => {
@@ -162,6 +182,10 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
     ).rejects.toMatchObject({ error: "invalid_grant" });
 
     const firstRefresh = String(tokens.refresh_token);
+    await db
+      .insert(defaultPermissions)
+      .values({ permission: "integration.live-default" })
+      .onConflictDoNothing();
     const rotated = await oauth.exchangeRefreshToken({
       refreshToken: firstRefresh,
       clientId: "portal",
@@ -171,7 +195,11 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
       sub: user.id,
       client_id: "portal",
       gty: "refresh_token",
+      permissions: ["integration.live-default", "participant"],
     });
+    await db
+      .delete(defaultPermissions)
+      .where(eq(defaultPermissions.permission, "integration.live-default"));
     await expect(
       oauth.exchangeRefreshToken({
         refreshToken: firstRefresh,

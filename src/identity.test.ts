@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
-import { deriveBasisStudentDetails } from "./identity.js";
+import { describe, expect, it, vi } from "vitest";
+import { defaultPermissions, userPermissions, users } from "./database/schema.js";
+import { createIdentityService, deriveBasisStudentDetails } from "./identity.js";
 
 describe("deriveBasisStudentDetails", () => {
   it("extracts the student ID and district from a Basis student email", () => {
@@ -28,5 +29,37 @@ describe("deriveBasisStudentDetails", () => {
       studentId: null,
       schoolDistrict: null,
     });
+  });
+});
+
+describe("default permissions", () => {
+  it("merges live defaults with user grants, removes duplicates, and sorts them", async () => {
+    const select = vi.fn(() => ({
+      from: (table: unknown) => table === defaultPermissions
+        ? Promise.resolve([{ permission: "participant" }, { permission: "Assets.Assets.read" }])
+        : table === userPermissions
+          ? { where: () => Promise.resolve([
+              { permission: "Assets.Assets.upload" },
+              { permission: "participant" },
+            ]) }
+          : table === users
+            ? {
+                where: () => ({
+                  limit: () => ({ prepare: () => ({ execute: async () => [] }) }),
+                }),
+              }
+          : Promise.reject(new Error("Unexpected table")),
+    }));
+    const identity = createIdentityService(
+      { select } as never,
+      {} as never,
+      [],
+    );
+
+    await expect(identity.permissionsFor("user-id")).resolves.toEqual([
+      "Assets.Assets.read",
+      "Assets.Assets.upload",
+      "participant",
+    ]);
   });
 });

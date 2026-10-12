@@ -15,7 +15,7 @@ import {
 import type { IdentityService } from "./identity.js";
 import type { KeyService } from "./oauth/keys.js";
 import { APIError, OAuthError } from "./oauth/errors.js";
-import type { OAuthService } from "./oauth/service.js";
+import { assertClientAllowsEmail, type OAuthService } from "./oauth/service.js";
 import type { SessionService } from "./oauth/sessions.js";
 import {
   microsoftAuthErrorPayload,
@@ -352,9 +352,7 @@ export function createApp(
   });
 
   app.get("/api/picture/:userId", async (c) => {
-    const session = await sessions.find(getCookie(c, SSO_COOKIE));
     const userId = c.req.param("userId");
-    if (!session || session.userId !== userId) return c.json({ error: "not_found" }, 404);
     const user = await identity.findUser(userId);
     if (!user?.picture || !user.pictureContentType) {
       return c.json({ error: "not_found" }, 404);
@@ -376,12 +374,12 @@ export function createApp(
     c.header("Cache-Control", "public, max-age=300, stale-while-revalidate=300");
     return c.json(keys.publicJwks);
   });
-
   app.use("/oauth/token", rateLimit(limiter, limitKey));
   app.use("/oauth/revoke", rateLimit(limiter, limitKey));
   app.use("/oauth/authorize", rateLimit(limiter, limitKey));
   app.use("/oauth/interaction/:uid/consent", rateLimit(limiter, limitKey));
   app.use("/oauth/callback/microsoft", rateLimit(limiter, limitKey));
+  app.use("/oauth/clients/:clientId", rateLimit(limiter, limitKey));
   app.use("/api/me", rateLimit(limiter, limitKey));
   if (allowedOrigins.length > 0) {
     app.use("/oauth/token", corsMiddleware(allowedOrigins));
@@ -396,6 +394,10 @@ export function createApp(
   app.use("/oauth/revoke", async (c, next) => {
     c.header("Cache-Control", "no-store");
     await next();
+  });
+
+  app.get("/oauth/clients/:clientId", async (c) => {
+    return c.json(await oauth.getClientInformation(c.req.param("clientId")));
   });
 
   app.get("/oauth/authorize", async (c) => {
@@ -463,12 +465,10 @@ export function createApp(
     const bridgeToken = getCookie(c, INTERACTION_COOKIE);
     if (!bridgeToken) throw new OAuthError("invalid_request", "Interaction cookie is missing");
     const request = await oauth.getAuthorization(bridgeToken);
-    const { organizations, ...client } = await oauth.getClient(request.clientId);
     return c.json({
       uid: request.id,
       prompt: request.userId ? "consent" : "login",
-      client,
-      organizations,
+      clientId: request.clientId,
       scopes: request.scopes,
       resources: [request.resource],
       accountId: request.userId,
@@ -528,14 +528,10 @@ export function createApp(
         result.authorizationRequestId,
         getCookie(c, INTERACTION_COOKIE),
       );
-      const filteredEmail = result.user.email.trim().toLowerCase();
-      const filterContent = client?.filterContentSet ?? new Set<string>();
-      const matchesFilter = filterContent.has(filteredEmail);
+      assertClientAllowsEmail(client, result.user.email);
       if (
         result.user.disabled ||
-        !client.organizations.some((organization) => organization.id === result.organization.id) ||
-        (client?.filterMode === "whitelist" && !matchesFilter) ||
-        (client?.filterMode === "blacklist" && matchesFilter)
+        !client.organizations.some((organization) => organization.id === result.organization.id)
       ) {
         throw new OAuthError("access_denied", "This account is not allowed to sign in to this application.", 403);
       }

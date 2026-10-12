@@ -2,7 +2,13 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import type { BootstrapPermissionGrant } from "./config.js";
 import type { Database } from "./database/client.js";
 import type { EmailDomainService } from "./database/emailDomains.js";
-import { emailDomainSuffixes, organizations, userPermissions, users } from "./database/schema.js";
+import {
+  defaultPermissions,
+  emailDomainSuffixes,
+  organizations,
+  userPermissions,
+  users,
+} from "./database/schema.js";
 
 export interface UpstreamIdentity {
   provider: string;
@@ -37,15 +43,17 @@ export function deriveBasisStudentDetails(email: string): BasisStudentDetails {
 export function createIdentityService(
   db: Database,
   emailDomains: EmailDomainService,
-  defaultPermission: string,
   bootstrapGrants: BootstrapPermissionGrant[],
 ) {
   async function permissionsFor(userId: string): Promise<string[]> {
-    const rows = await db
-      .select({ permission: userPermissions.permission })
-      .from(userPermissions)
-      .where(eq(userPermissions.userId, userId));
-    return rows.map((row) => row.permission).sort();
+    const [defaults, grants] = await Promise.all([
+      db.select({ permission: defaultPermissions.permission }).from(defaultPermissions),
+      db
+        .select({ permission: userPermissions.permission })
+        .from(userPermissions)
+        .where(eq(userPermissions.userId, userId)),
+    ]);
+    return [...new Set([...defaults, ...grants].map((row) => row.permission))].sort();
   }
 
   async function upsertFromMicrosoft(identity: UpstreamIdentity) {
@@ -97,11 +105,12 @@ export function createIdentityService(
       .returning();
 
     const bootstrap = bootstrapGrants.find((grant) => grant.email === normalizedEmail);
-    const permissions = new Set([defaultPermission, ...(bootstrap?.permissions ?? [])]);
-    await db
-      .insert(userPermissions)
-      .values([...permissions].map((permission) => ({ userId: user!.id, permission })))
-      .onConflictDoNothing();
+    if (bootstrap?.permissions.length) {
+      await db
+        .insert(userPermissions)
+        .values(bootstrap.permissions.map((permission) => ({ userId: user!.id, permission })))
+        .onConflictDoNothing();
+    }
     return user!;
   }
 

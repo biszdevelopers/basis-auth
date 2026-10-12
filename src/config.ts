@@ -110,7 +110,6 @@ const environmentSchema = z.object({
   OIDC_JWKS_FILE: z.string().optional(),
   OIDC_CLIENTS_JSON: optionalJsonArray,
   OIDC_RESOURCES_JSON: optionalJsonArray,
-  DEFAULT_PERMISSION: z.string().min(1).default("participant"),
   BOOTSTRAP_PERMISSION_GRANTS_JSON: optionalJsonArray,
   MICROSOFT_ISSUER: z.url().optional(),
   MICROSOFT_CLIENT_ID: z.string().min(1).optional(),
@@ -165,7 +164,6 @@ export interface AppConfig {
   jwks: { keys: JWK[] };
   clients: ClientSeed[];
   resources: ResourceSeed[];
-  defaultPermission: string;
   bootstrapPermissionGrants: BootstrapPermissionGrant[];
   microsoft?: {
     issuer: string;
@@ -317,7 +315,6 @@ export async function loadConfig(source: NodeJS.ProcessEnv = process.env): Promi
     jwks: await loadJwks(env),
     clients: developmentDemo ? [...clients, developmentDemo.client] : clients,
     resources: developmentDemo ? [...resources, developmentDemo.resource] : resources,
-    defaultPermission: env.DEFAULT_PERMISSION,
     bootstrapPermissionGrants: parseJson(
       "BOOTSTRAP_PERMISSION_GRANTS_JSON",
       env.BOOTSTRAP_PERMISSION_GRANTS_JSON,

@@ -23,7 +23,6 @@ const emailDomains = createEmailDomainService(db);
 const identity = createIdentityService(
   db,
   emailDomains,
-  config.defaultPermission,
   config.bootstrapPermissionGrants,
 );
 const keys = await createKeyService(config, identity);

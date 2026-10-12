@@ -50,6 +50,21 @@ export interface OAuthClient {
   metadata: StoredClientMetadata;
 }
 
+export function assertClientAllowsEmail(
+  client: Pick<OAuthClient, "filterMode" | "filterContent"> & { filterContentSet?: Set<string> },
+  email: string,
+) {
+  const normalizedEmail = email.trim().toLowerCase();
+  const matchesFilter = client.filterContentSet?.has(normalizedEmail)
+    ?? client.filterContent.includes(normalizedEmail);
+  if (
+    (client.filterMode === "whitelist" && !matchesFilter) ||
+    (client.filterMode === "blacklist" && matchesFilter)
+  ) {
+    throw new OAuthError("access_denied", "This account is not allowed to sign in to this application.", 403);
+  }
+}
+
 function parseMetadata(value: Record<string, unknown>): StoredClientMetadata {
   const permissions = value.permissions === undefined
     ? {}
@@ -220,7 +235,9 @@ export function createOAuthService(
       throw new OAuthError("invalid_scope", "A requested scope is not supported by the resource", 400, 14401);
     }
 
-    const sessionOrganization = input.session ? await identity.organizationForUser(input.session.userId) : undefined;
+    const sessionUser = input.session ? await identity.findUser(input.session.userId) : undefined;
+    if (sessionUser) assertClientAllowsEmail(client, sessionUser.email);
+    const sessionOrganization = sessionUser ? await identity.organizationForUser(sessionUser.id) : undefined;
     const allowedSession = input.session && sessionOrganization && client.organizations.some(
       (organization) => organization.id === sessionOrganization.id,
     )
@@ -282,13 +299,27 @@ export function createOAuthService(
     return request;
   }
 
-  async function getClient(clientId: string) {
+  async function getClientInformation(clientId: string) {
     const client = await clientCache.get(clientId);
-    if (!client) throw new OAuthError("invalid_request", `Client "${clientId}" is not registered or has been disabled.`, 400, 14001);
+    if (!client) throw new OAuthError("invalid_request", `Client "${clientId}" is not registered or has been disabled.`, 404, 14001);
+    const ownerIds = client.metadata.owners.map((owner) => owner.id);
+    const people = await identity.findUsersByIds(ownerIds);
+    const peopleById = new Map(people.map((person) => [person.id, person]));
     return {
       id: client.clientId,
       name: client.metadata.name,
-      organizations: client.organizations,
+      owners: ownerIds.flatMap((ownerId) => {
+        const person = peopleById.get(ownerId);
+        if (!person) return [];
+        return [{
+          id: person.id,
+          name: person.displayName?.trim() || person.email,
+          email: person.email,
+          picture: person.picture && person.pictureContentType
+            ? `/api/picture/${encodeURIComponent(person.id)}`
+            : null,
+        }];
+      }),
     };
   }
 
@@ -651,7 +682,7 @@ export function createOAuthService(
     startAuthorization,
     interaction,
     getAuthorization,
-    getClient,
+    getClientInformation,
     requiresConsent,
     attachUser,
     clearInteractionUser,
