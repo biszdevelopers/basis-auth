@@ -1,4 +1,4 @@
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, count, desc, eq, isNull, sql } from "drizzle-orm";
 import type { Database } from "../database/client.js";
 import type { EmailDomainService } from "../database/emailDomains.js";
 import { authSessions, refreshTokens, users } from "../database/schema.js";
@@ -19,6 +19,11 @@ interface UserPatch {
   email?: string;
   disabled?: boolean;
   picture?: PictureInput | null;
+}
+
+interface UserPageInput {
+  page: number;
+  pageSize: number;
 }
 
 export class InternalUserError extends Error {
@@ -102,13 +107,55 @@ function validateUserId(userId: string) {
   if (!uuidPattern.test(userId)) throw new InternalUserError("User ID is invalid", 400, "invalid_request");
 }
 
+function parsePagination(input: { page?: string; pageSize?: string }): UserPageInput {
+  const page = input.page === undefined ? 1 : Number(input.page);
+  const pageSize = input.pageSize === undefined ? 20 : Number(input.pageSize);
+  if (!Number.isSafeInteger(page) || page < 1) {
+    throw new InternalUserError("page must be a positive integer", 400, "invalid_request");
+  }
+  if (!Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 100) {
+    throw new InternalUserError("pageSize must be an integer between 1 and 100", 400, "invalid_request");
+  }
+  return { page, pageSize };
+}
+
 export function createInternalUserService(db: Database, emailDomains: EmailDomainService) {
+  async function listUsers(input: UserPageInput) {
+    const offset = (input.page - 1) * input.pageSize;
+    const [pageUsers, [summary]] = await Promise.all([
+      db
+        .select({
+          id: users.id,
+          displayName: users.displayName,
+          email: users.email,
+          hasPicture: sql<boolean>`${users.picture} is not null and ${users.pictureContentType} is not null`,
+        })
+        .from(users)
+        .orderBy(desc(users.createdAt), desc(users.id))
+        .limit(input.pageSize)
+        .offset(offset),
+      db.select({ total: count() }).from(users),
+    ]);
+    const total = summary?.total ?? 0;
+    return {
+      users: pageUsers,
+      pagination: {
+        page: input.page,
+        pageSize: input.pageSize,
+        total,
+        totalPages: Math.ceil(total / input.pageSize),
+      },
+    };
+  }
+
   async function findUser(userId: string) {
     validateUserId(userId);
     const [user] = await db
       .select({
         id: users.id,
         provider: users.provider,
+        upstreamIssuer: users.upstreamIssuer,
+        upstreamSubject: users.upstreamSubject,
         email: users.email,
         emailSuffixId: users.emailSuffixId,
         studentId: users.studentId,
@@ -175,8 +222,8 @@ export function createInternalUserService(db: Database, emailDomains: EmailDomai
     return (await findUser(userId))!;
   }
 
-  return { findUser, findPicture, patchUser };
+  return { listUsers, findUser, findPicture, patchUser };
 }
 
 export type InternalUserService = ReturnType<typeof createInternalUserService>;
-export const internalUserInternals = { parsePatch, validateUserId };
+export const internalUserInternals = { parsePagination, parsePatch, validateUserId };

@@ -25,3 +25,23 @@ describe("internal user PATCH validation", () => {
     expect(() => internalUserInternals.validateUserId("not-a-uuid")).toThrow(InternalUserError);
   });
 });
+
+describe("internal user pagination validation", () => {
+  it("applies defaults and accepts bounded positive integers", () => {
+    expect(internalUserInternals.parsePagination({})).toEqual({ page: 1, pageSize: 20 });
+    expect(internalUserInternals.parsePagination({ page: "3", pageSize: "50" })).toEqual({
+      page: 3,
+      pageSize: 50,
+    });
+  });
+
+  it.each([
+    { page: "0" },
+    { page: "1.5" },
+    { page: "nope" },
+    { pageSize: "0" },
+    { pageSize: "101" },
+  ])("rejects invalid pagination: %o", (query) => {
+    expect(() => internalUserInternals.parsePagination(query)).toThrow(InternalUserError);
+  });
+});

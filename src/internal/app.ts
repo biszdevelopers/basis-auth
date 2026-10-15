@@ -1,4 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
+import { DelegatedPermissionSet, type Permission } from "@basis/schema/permissions";
 import { Hono, type Context } from "hono";
 import { secureHeaders } from "hono/secure-headers";
 import { z } from "zod";
@@ -8,7 +9,7 @@ import {
   type ApplicationActor,
   type InternalApplicationService,
 } from "./applications.js";
-import { InternalUserError, type InternalUserService } from "./users.js";
+import { InternalUserError, internalUserInternals, type InternalUserService } from "./users.js";
 
 type ManagementOptions = {
   applications: InternalApplicationService;
@@ -97,6 +98,7 @@ export function createInternalApp(token: string, users: InternalUserService, man
       return c.json(await operation(await actor(c)) as never);
     } catch (error) {
       if (error instanceof InternalApplicationError) return c.json({ error: error.code, message: error.message }, error.status);
+      if (error instanceof InternalUserError) return c.json({ error: error.code, message: error.message }, error.status);
       if (error instanceof z.ZodError) return c.json({ error: "invalid_request", message: error.issues[0]?.message ?? "Invalid request" }, 400);
       if (error instanceof SyntaxError) return c.json({ error: "invalid_request", message: "Request body is not valid JSON" }, 400);
       throw error;
@@ -114,6 +116,17 @@ export function createInternalApp(token: string, users: InternalUserService, man
       organizationIds: z.array(z.uuid()).min(1).refine((values) => new Set(values).size === values.length, "Organization IDs must be unique"),
     });
     const permissionSchema = z.object({ permission: z.string().trim().min(1), description: z.string().trim().min(1) });
+
+    app.get("/internal/users", (c) => managed(c, async (who) => {
+      if (!new DelegatedPermissionSet(who.permissions).has("BiszPortal.Users.read" as Permission)) {
+        throw new InternalApplicationError(403, "forbidden", "User listing requires BiszPortal.Users.read");
+      }
+      const pagination = internalUserInternals.parsePagination({
+        page: c.req.query("page"),
+        pageSize: c.req.query("pageSize"),
+      });
+      return users.listUsers(pagination);
+    }));
 
     app.get("/internal/applications", (c) => managed(c, async (who) => ({
       applications: await management.applications.list(who),

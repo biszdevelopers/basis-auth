@@ -8,6 +8,8 @@ const token = "i".repeat(32);
 const user = {
   id: "d2c3f635-527c-4c0a-bc1c-15d6af3f0946",
   provider: "microsoft",
+  upstreamIssuer: "https://login.microsoftonline.com/test/v2.0",
+  upstreamSubject: "microsoft-subject",
   email: "person@example.test",
   studentId: null,
   schoolDistrict: null,
@@ -23,8 +25,12 @@ function internalApp(service: InternalUserService) {
   return createInternalApp(token, service);
 }
 
-function managementApp(applications: InternalApplicationService, verifyAccessToken = vi.fn()) {
-  return createInternalApp(token, {} as InternalUserService, {
+function managementApp(
+  applications: InternalApplicationService,
+  verifyAccessToken = vi.fn(),
+  users = {} as InternalUserService,
+) {
+  return createInternalApp(token, users, {
     applications,
     keys: { verifyAccessToken } as unknown as KeyService,
     clientId: "portal-client",
@@ -47,7 +53,14 @@ describe("internal user HTTP API", () => {
       headers: { authorization: `Bearer ${token}` },
     });
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ user: { id: user.id, hasPicture: true } });
+    expect(await response.json()).toMatchObject({
+      user: {
+        id: user.id,
+        upstreamIssuer: user.upstreamIssuer,
+        upstreamSubject: user.upstreamSubject,
+        hasPicture: true,
+      },
+    });
   });
 
   it("delegates PATCH mutation to the auth-owned service", async () => {
@@ -61,6 +74,50 @@ describe("internal user HTTP API", () => {
     expect(response.status).toBe(200);
     expect(patchUser).toHaveBeenCalledWith(user.id, { disabled: true });
     expect(await response.json()).toMatchObject({ user: { disabled: true } });
+  });
+
+  it("returns a permission-protected paged user list", async () => {
+    const listUsers = vi.fn().mockResolvedValue({
+      users: [user],
+      pagination: { page: 2, pageSize: 10, total: 11, totalPages: 2 },
+    });
+    const verify = vi.fn().mockResolvedValue({
+      sub: user.id,
+      client_id: "portal-client",
+      scope: "noesis.access",
+      permissions: ["BiszPortal.Users.read"],
+      gty: "authorization_code",
+    });
+    const response = await managementApp(
+      {} as InternalApplicationService,
+      verify,
+      { listUsers } as unknown as InternalUserService,
+    ).request("/internal/users?page=2&pageSize=10", {
+      headers: { authorization: `Bearer ${token}`, "x-basis-actor-token": "Bearer actor" },
+    });
+    expect(response.status).toBe(200);
+    expect(listUsers).toHaveBeenCalledWith({ page: 2, pageSize: 10 });
+    expect(await response.json()).toMatchObject({ pagination: { total: 11 } });
+  });
+
+  it("rejects user listing without the delegated read permission", async () => {
+    const listUsers = vi.fn();
+    const verify = vi.fn().mockResolvedValue({
+      sub: user.id,
+      client_id: "portal-client",
+      scope: "noesis.access",
+      permissions: [],
+      gty: "authorization_code",
+    });
+    const response = await managementApp(
+      {} as InternalApplicationService,
+      verify,
+      { listUsers } as unknown as InternalUserService,
+    ).request("/internal/users", {
+      headers: { authorization: `Bearer ${token}`, "x-basis-actor-token": "Bearer actor" },
+    });
+    expect(response.status).toBe(403);
+    expect(listUsers).not.toHaveBeenCalled();
   });
 });
 
