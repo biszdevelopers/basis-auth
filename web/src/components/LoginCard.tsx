@@ -197,7 +197,7 @@ export function LoginCard({
 
                             <div>
                                 {stat.error.error === "access_denied" ? (
-                                    <p className="text-sm">Your account is not allowed to sign in to this application. Contact the
+                                    <p className="text-sm">Your account is not allowed to sign in to {client?.name ?? "this application"}. Contact the
                                     {" "}
                                     <HoverCard openDelay={200} closeDelay={200}>
                                         <HoverCardTrigger asChild>
@@ -217,7 +217,7 @@ export function LoginCard({
                                 )}
                             </div>
                             {stat.error.error === "access_denied" && (
-                                <Button disabled={Boolean(hold)} onClick={logout}>
+                                <Button disabled={Boolean(hold)} onClick={logout} className="mt-4">
                                     {hold === "logout" ? <Spinner /> : "Log out and switch an account"}
                                 </Button>
                             )}
