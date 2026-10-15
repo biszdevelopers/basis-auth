@@ -83,7 +83,7 @@ body { @apply bg-background text-foreground; }
 
 @font-face {
   font-family: "Monaspace";
-  src: url("/fonts/Monaspace-Neon.woff2") format("woff2");
+  src: url("https://assets.bisz.dev/d62ebb56e06b047ac4d14a030a8eb5cd4a87c9e3365b04da0d919311af82cef6") format("woff2");
   font-weight: 100 900;   /* adjust to the weights you actually ship */
   font-style: normal;
   font-display: swap;
@@ -91,7 +91,7 @@ body { @apply bg-background text-foreground; }
 
 @font-face {
   font-family: "Geist";
-  src: url("/fonts/Geist.ttf") format("truetype");
+  src: url("https://assets.bisz.dev/39fb61a385b9bbac6ff86c03a948d32f6d5626cd993e4a7e1a62d73d3a54bc79") format("truetype");
   font-weight: 400 600;   /* adjust to the weights you actually ship */
   font-style: normal;
   font-display: swap;
