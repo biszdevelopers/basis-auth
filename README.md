@@ -63,6 +63,11 @@ Production must set `NODE_ENV=production`, an HTTPS `OIDC_ISSUER`, persistent pr
 
 For basishacks, register the dedicated resource audience `devconnect://nethack.bisz.dev` and the application scope `nethack.access`; the client explicitly requests it with `openid profile email offline_access`. Client registrations initialize descriptive global permission definitions as a JSON object, for example `"nethack.Projects.read.all": "View all projects"`. User grants are stored globally, not per client, and every human access token contains the union of `default_permissions` and that user's grants in its `permissions` array. Definitions are a catalog for future administration and display; they do not filter existing grants. The complete JSON example is in `.env.example`.
 
+`Assets.Assets.create` is a global default permission, so every newly issued
+human access token can use the standard Assets upload flow. The more privileged
+`Assets.Assets.create.unlimited` grant is never assigned by default and must be
+granted explicitly.
+
 Confidential BFF clients use `client_secret_basic`; PostgreSQL stores only a scrypt hash of the configured secret. Public clients use `token_endpoint_auth_method=none`. Every authorization request from either client type must include a fresh RFC 7636 verifier-derived `code_challenge` and `code_challenge_method=S256`. The token request must include the matching `code_verifier`; `nonce` remains an additional OIDC replay binding and is not a substitute for PKCE.
 
 Public clients that listen on an ephemeral local port may register a redirect such as `http://localhost:*/auth/callback`. The `*` replaces only the port: the authorization request must supply a concrete numeric port and the exact registered path, for example `http://localhost:49152/auth/callback`. This syntax is limited to public clients and `localhost`; it does not support query strings or fragments. A normal registration such as `http://localhost/` remains an exact redirect URI and does not match arbitrary ports.

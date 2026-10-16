@@ -36,7 +36,11 @@ describe("default permissions", () => {
   it("merges live defaults with user grants, removes duplicates, and sorts them", async () => {
     const select = vi.fn(() => ({
       from: (table: unknown) => table === defaultPermissions
-        ? Promise.resolve([{ permission: "participant" }, { permission: "Assets.Assets.read" }])
+        ? Promise.resolve([
+            { permission: "participant" },
+            { permission: "Assets.Assets.read" },
+            { permission: "Assets.Assets.create" },
+          ])
         : table === userPermissions
           ? { where: () => Promise.resolve([
               { permission: "Assets.Assets.upload" },
@@ -57,6 +61,7 @@ describe("default permissions", () => {
     );
 
     await expect(identity.permissionsFor("user-id")).resolves.toEqual([
+      "Assets.Assets.create",
       "Assets.Assets.read",
       "Assets.Assets.upload",
       "participant",
