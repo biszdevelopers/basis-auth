@@ -105,6 +105,29 @@ export function createInternalApp(token: string, users: InternalUserService, man
     }
   }
 
+  app.get("/internal/management/users/:userId", (c) => managed(c, async (who) => {
+    if (!new DelegatedPermissionSet(who.permissions).has("BiszPortal.Users.read" as Permission)) {
+      throw new InternalApplicationError(403, "forbidden", "User details require BiszPortal.Users.read");
+    }
+    const result = await users.findManagementUser(c.req.param("userId"));
+    if (!result) throw new InternalUserError("User not found", 404, "user_not_found");
+    return result;
+  }));
+
+  app.patch("/internal/management/users/:userId", (c) => managed(c, async (who) => {
+    if (!new DelegatedPermissionSet(who.permissions).has("BiszPortal.Users.update" as Permission)) {
+      throw new InternalApplicationError(403, "forbidden", "User updates require BiszPortal.Users.update");
+    }
+    const body = await c.req.json<unknown>();
+    if (
+      who.id === c.req.param("userId") && body && typeof body === "object" && !Array.isArray(body) &&
+      "disabled" in body && body.disabled === true
+    ) {
+      throw new InternalApplicationError(400, "invalid_request", "You cannot disable your own account");
+    }
+    return users.patchManagementUser(c.req.param("userId"), body);
+  }));
+
   if (management) {
     const roleSchema = z.enum(["role.ADMIN", "role.GENERAL"]);
     const resourceSchema = z.object({ resourceId: z.string().min(1), name: z.string().trim().min(1), availableScopes: z.array(z.string().min(1)).default([]) });

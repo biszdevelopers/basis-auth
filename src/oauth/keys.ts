@@ -62,7 +62,7 @@ export async function createKeyService(config: AppConfig, identity: IdentityServ
     const user = preloaded?.user ?? (await identity.findUser(input.userId));
     if (!user || user.disabled) throw new Error("Cannot issue an access token for a missing or disabled user");
     const permissions = [...new DelegatedPermissionSet(
-      preloaded?.permissions ?? (await identity.permissionsFor(input.userId)),
+      preloaded?.permissions ?? (await identity.permissionsFor(input.userId, input.clientId)),
     ).permissions];
     const token = new SignJWT({
       client_id: input.clientId,

@@ -1,9 +1,9 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { DelegatedPermissionSet, type Permission } from "@basis/schema/permissions";
-import { eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { isEphemeralLocalhostRedirectUri } from "../config.js";
 import type { Database } from "../database/client.js";
-import { oidcClientOrganizations, oidcClients, organizations, resourceServers, users } from "../database/schema.js";
+import { oidcClientOrganizations, oidcClients, oidcPermissions, organizations, resourceServers, users } from "../database/schema.js";
 import { hashClientSecret, type ClientOwner, type StoredClientMetadata } from "../database/seed.js";
 
 export const applicationPermissions = {
@@ -47,7 +47,6 @@ function metadataOf(row: typeof oidcClients.$inferSelect): StoredClientMetadata 
     redirectUris: Array.isArray(metadata.redirectUris) ? metadata.redirectUris : [],
     scopes,
     resourceScopes,
-    permissions: metadata.permissions ?? {},
     owners: Array.isArray(metadata.owners) ? metadata.owners : [],
   } as StoredClientMetadata & { resourceScopes: Record<string, string[]> };
 }
@@ -137,7 +136,6 @@ export function createInternalApplicationService(db: Database, issuer: string, i
       public: input.public,
       scopes: [],
       resourceScopes: { [resourceId]: [] },
-      permissions: {},
     };
     await db.transaction(async (tx) => {
       await tx.insert(resourceServers).values({ audience: resourceId, name: `${input.name} API`, scopes: [] });
@@ -157,13 +155,15 @@ export function createInternalApplicationService(db: Database, issuer: string, i
 
   async function detail(clientId: string, actor: ApplicationActor) {
     const { row, metadata, membership } = await accessible(clientId, actor);
-    const [resources, allClients, linkedOrganizations, availableOrganizations] = await Promise.all([
+    const [resources, allClients, linkedOrganizations, availableOrganizations, permissions] = await Promise.all([
       db.select().from(resourceServers).where(inArray(resourceServers.audience, row.resources)),
       db.select({ clientId: oidcClients.clientId, resources: oidcClients.resources }).from(oidcClients),
       db.select({ organizationId: organizations.organizationId }).from(oidcClientOrganizations)
         .innerJoin(organizations, eq(oidcClientOrganizations.organizationId, organizations.id))
         .where(eq(oidcClientOrganizations.clientId, clientId)),
       db.select({ organizationId: organizations.organizationId, firstParty: organizations.firstParty }).from(organizations),
+      db.select({ permission: oidcPermissions.permission, description: oidcPermissions.description })
+        .from(oidcPermissions).where(eq(oidcPermissions.clientId, clientId)),
     ]);
     const ownerIds = metadata.owners.map((owner) => owner.id);
     const people = ownerIds.length ? await db.select({
@@ -184,6 +184,7 @@ export function createInternalApplicationService(db: Database, issuer: string, i
       organizationIds: linkedOrganizations.map((organization) => organization.organizationId),
       availableOrganizations,
       updatedAt: row.updatedAt.toISOString(),
+      permissionCatalogVersion: row.permissionCatalogVersion,
       role: membership.role,
       capabilities: {
         update: membership.role === "role.ADMIN" && hasPermission(actor, applicationPermissions.update),
@@ -207,7 +208,7 @@ export function createInternalApplicationService(db: Database, issuer: string, i
         claimCount: allClients.filter((client) => client.resources.includes(resource.audience)).length,
       })),
       availableResources: (await db.select().from(resourceServers)).map((resource) => ({ resourceId: resource.audience, name: resource.name, availableScopes: resource.scopes })),
-      permissions: Object.entries(metadata.permissions).map(([permission, description]) => ({ permission, description })),
+      permissions,
       redirectUris: metadata.redirectUris,
     };
   }
@@ -344,23 +345,45 @@ export function createInternalApplicationService(db: Database, issuer: string, i
   }
 
   async function createPermission(clientId: string, actor: ApplicationActor, permission: string, description: string) {
-    const { metadata } = await accessible(clientId, actor, applicationPermissions.permissions);
-    if (permission in metadata.permissions) throw new InternalApplicationError(409, "conflict", "Permission definition already exists");
-    await saveMetadata(clientId, { ...metadata, permissions: { ...metadata.permissions, [permission]: description } });
+    await accessible(clientId, actor, applicationPermissions.permissions);
+    const [existing] = await db.select({ permission: oidcPermissions.permission }).from(oidcPermissions)
+      .where(and(eq(oidcPermissions.clientId, clientId), eq(oidcPermissions.permission, permission))).limit(1);
+    if (existing) throw new InternalApplicationError(409, "conflict", "Permission definition already exists");
+    await db.transaction(async (tx) => {
+      await tx.insert(oidcPermissions).values({ clientId, permission, description });
+      await tx.update(oidcClients).set({
+        permissionCatalogVersion: sql`${oidcClients.permissionCatalogVersion} + 1`,
+        updatedAt: new Date(),
+      }).where(eq(oidcClients.clientId, clientId));
+    });
   }
 
   async function updatePermission(clientId: string, actor: ApplicationActor, permission: string, description: string) {
-    const { metadata } = await accessible(clientId, actor, applicationPermissions.permissions);
-    if (!(permission in metadata.permissions)) throw new InternalApplicationError(404, "not_found", "Permission definition not found");
-    await saveMetadata(clientId, { ...metadata, permissions: { ...metadata.permissions, [permission]: description } });
+    await accessible(clientId, actor, applicationPermissions.permissions);
+    await db.transaction(async (tx) => {
+      const updated = await tx.update(oidcPermissions).set({ description })
+        .where(and(eq(oidcPermissions.clientId, clientId), eq(oidcPermissions.permission, permission)))
+        .returning({ permission: oidcPermissions.permission });
+      if (!updated.length) throw new InternalApplicationError(404, "not_found", "Permission definition not found");
+      await tx.update(oidcClients).set({
+        permissionCatalogVersion: sql`${oidcClients.permissionCatalogVersion} + 1`,
+        updatedAt: new Date(),
+      }).where(eq(oidcClients.clientId, clientId));
+    });
   }
 
   async function deletePermission(clientId: string, actor: ApplicationActor, permission: string) {
-    const { metadata } = await accessible(clientId, actor, applicationPermissions.permissions);
-    if (!(permission in metadata.permissions)) throw new InternalApplicationError(404, "not_found", "Permission definition not found");
-    const permissions = { ...metadata.permissions };
-    delete permissions[permission];
-    await saveMetadata(clientId, { ...metadata, permissions });
+    await accessible(clientId, actor, applicationPermissions.permissions);
+    await db.transaction(async (tx) => {
+      const deleted = await tx.delete(oidcPermissions)
+        .where(and(eq(oidcPermissions.clientId, clientId), eq(oidcPermissions.permission, permission)))
+        .returning({ permission: oidcPermissions.permission });
+      if (!deleted.length) throw new InternalApplicationError(404, "not_found", "Permission definition not found");
+      await tx.update(oidcClients).set({
+        permissionCatalogVersion: sql`${oidcClients.permissionCatalogVersion} + 1`,
+        updatedAt: new Date(),
+      }).where(eq(oidcClients.clientId, clientId));
+    });
   }
 
   async function updateRedirectUris(clientId: string, actor: ApplicationActor, redirectUris: string[]) {

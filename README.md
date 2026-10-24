@@ -61,12 +61,13 @@ Production must set `NODE_ENV=production`, an HTTPS `OIDC_ISSUER`, persistent pr
 
 `OIDC_RESOURCES_JSON` declares API audiences, display names, and the scopes each API accepts. A client claims one or more resources, and `OIDC_CLIENTS_JSON` declares its allowed scopes per resource through `resourceScopes` (the legacy flat `scopes` list remains a fallback). The standard `openid`, `profile`, `email`, and `offline_access` scopes are public to every registered client and do not need to be listed in either configuration.
 
-For basishacks, register the dedicated resource audience `devconnect://nethack.bisz.dev` and the application scope `nethack.access`; the client explicitly requests it with `openid profile email offline_access`. Client registrations initialize descriptive global permission definitions as a JSON object, for example `"nethack.Projects.read.all": "View all projects"`. User grants are stored globally, not per client, and every human access token contains the union of `default_permissions` and that user's grants in its `permissions` array. Definitions are a catalog for future administration and display; they do not filter existing grants. The complete JSON example is in `.env.example`.
+For basishacks, register the dedicated resource audience `devconnect://nethack.bisz.dev` and the application scope `nethack.access`; the client explicitly requests it with `openid profile email offline_access`. Each client owns its permission definitions in the `permissions` object and may list explicitly defined defaults in `defaultPermissions`. User grants are scoped to the client that issued them, and a human access token contains only that application's grants. Defaults are copied to a user once, on their first successful login to that application. Additions to the default list do not change grants for users who have already logged in. The complete JSON example is in `.env.example`.
 
-`Assets.Assets.create` is a global default permission, so every newly issued
-human access token can use the standard Assets upload flow. The more privileged
-`Assets.Assets.create.unlimited` grant is never assigned by default and must be
-granted explicitly.
+An exact grant such as `nethack.Projects.read` covers that permission. A stored
+`nethack.Projects.all` clause covers every current and future permission below
+that namespace. Permission definitions are also the catalog used to validate
+and display grants; removing a definition does not bulk-edit users, and stale
+grants are cleaned up on that user's next login to the application.
 
 Confidential BFF clients use `client_secret_basic`; PostgreSQL stores only a scrypt hash of the configured secret. Public clients use `token_endpoint_auth_method=none`. Every authorization request from either client type must include a fresh RFC 7636 verifier-derived `code_challenge` and `code_challenge_method=S256`. The token request must include the matching `code_verifier`; `nonce` remains an additional OIDC replay binding and is not a substitute for PKCE.
 
@@ -142,7 +143,7 @@ Other platforms should implement the same contract with their standard OAuth res
 
 Resource APIs that require immediate per-user revocation must also load the token subject's `disabled` and `tokens_valid_after` state after signature validation. Reject disabled subjects and tokens whose `iat` is at or before that barrier. The example middleware exposes `loadTokenSubject` for this check while keeping JWT and revocation validation local to the resource API.
 
-`basis-api` uses the private `/internal/users/:userId` endpoints for this state, profile pictures, and user PATCH operations. The same listener exposes `/internal/applications` management endpoints for the portal. Every request requires `Authorization: Bearer <INTERNAL_API_TOKEN>`; application-management requests additionally require the signed end-user access token in `X-Basis-Actor-Token: Bearer ...`. Basis Auth verifies its audience, portal client ID, user grant type, required scope, delegated permissions, and per-application membership before any operation. Configure those checks with `MANAGEMENT_PORTAL_CLIENT_ID`, `MANAGEMENT_PORTAL_AUDIENCE`, and `MANAGEMENT_PORTAL_SCOPE`. The listener is configured by `INTERNAL_API_HOST` and `INTERNAL_API_PORT`, bound to `127.0.0.1:3001` by default; keep it off the public network.
+`basis-api` uses the private `/internal/users/:userId` endpoints for identity state and profile pictures. The same listener exposes `/internal/management/users/:userId` for user and permission administration, plus `/internal/applications` management endpoints. Every request requires `Authorization: Bearer <INTERNAL_API_TOKEN>`; management requests additionally require the signed end-user access token in `X-Basis-Actor-Token: Bearer ...`. Basis Auth verifies its audience, portal client ID, user grant type, required scope, and delegated permissions before each operation. Configure those checks with `MANAGEMENT_PORTAL_CLIENT_ID`, `MANAGEMENT_PORTAL_AUDIENCE`, and `MANAGEMENT_PORTAL_SCOPE`. The listener is configured by `INTERNAL_API_HOST` and `INTERNAL_API_PORT`, bound to `127.0.0.1:3001` by default; keep it off the public network.
 
 ## Development commands
 

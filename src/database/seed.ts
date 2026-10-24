@@ -1,9 +1,9 @@
 import { promisify } from "node:util";
 import { randomBytes, scrypt as scryptCallback, timingSafeEqual } from "node:crypto";
-import { eq, inArray } from "drizzle-orm";
-import type { ClientSeed, PermissionDefinitions, ResourceSeed } from "../config.js";
+import { and, eq, inArray, notInArray, sql } from "drizzle-orm";
+import type { ClientSeed, ResourceSeed } from "../config.js";
 import type { Database } from "./client.js";
-import { oidcClientOrganizations, oidcClients, organizations, resourceServers } from "./schema.js";
+import { defaultPermissions, oidcClientOrganizations, oidcClients, oidcPermissions, organizations, resourceServers } from "./schema.js";
 
 const scrypt = promisify(scryptCallback);
 const defaultClientOwnerId = "c6ba1588-03bb-4c61-a4e1-3c7c82e919b5";
@@ -35,7 +35,6 @@ export interface StoredClientMetadata extends Record<string, unknown> {
   public: boolean;
   scopes: string[];
   resourceScopes?: Record<string, string[]>;
-  permissions: PermissionDefinitions;
 }
 
 export async function seedConfiguration(
@@ -72,7 +71,6 @@ export async function seedConfiguration(
       resourceScopes: client.resourceScopes ?? Object.fromEntries(
         client.resources.map((resource) => [resource, client.scopes]),
       ),
-      permissions: client.permissions,
     };
     const [existing] = await db
       .select({ secretHash: oidcClients.secretHash })
@@ -108,6 +106,57 @@ export async function seedConfiguration(
           updatedAt: new Date(),
         },
       });
+    const existingDefinitions = await db
+      .select({ permission: oidcPermissions.permission, description: oidcPermissions.description })
+      .from(oidcPermissions)
+      .where(eq(oidcPermissions.clientId, client.clientId));
+    const oldDefinitions = new Map(existingDefinitions.map((item) => [item.permission, item.description]));
+    const nextDefinitions = Object.entries(client.permissions);
+    const changed = oldDefinitions.size !== nextDefinitions.length || nextDefinitions.some(
+      ([permission, description]) => oldDefinitions.get(permission) !== description,
+    );
+    if (changed) {
+      await db.transaction(async (tx) => {
+        const nextPermissions = nextDefinitions.map(([permission]) => permission);
+        if (nextPermissions.length) {
+          await tx.delete(oidcPermissions).where(and(
+            eq(oidcPermissions.clientId, client.clientId),
+            notInArray(oidcPermissions.permission, nextPermissions),
+          ));
+        } else {
+          await tx.delete(oidcPermissions).where(eq(oidcPermissions.clientId, client.clientId));
+        }
+        for (const [permission, description] of nextDefinitions) {
+          await tx.insert(oidcPermissions).values({ clientId: client.clientId, permission, description })
+            .onConflictDoUpdate({
+              target: [oidcPermissions.clientId, oidcPermissions.permission],
+              set: { description },
+            });
+        }
+        await tx.update(oidcClients).set({
+          permissionCatalogVersion: sql`${oidcClients.permissionCatalogVersion} + 1`,
+          updatedAt: new Date(),
+        }).where(eq(oidcClients.clientId, client.clientId));
+      });
+    }
+    const storedDefaults = await db.select({ permission: defaultPermissions.permission })
+      .from(defaultPermissions).where(eq(defaultPermissions.applicationId, client.clientId));
+    const currentDefaults = new Set(storedDefaults.map(({ permission }) => permission));
+    const nextDefaults = new Set(client.defaultPermissions);
+    if (
+      currentDefaults.size !== nextDefaults.size ||
+      [...nextDefaults].some((permission) => !currentDefaults.has(permission))
+    ) {
+      await db.transaction(async (tx) => {
+        await tx.delete(defaultPermissions).where(eq(defaultPermissions.applicationId, client.clientId));
+        if (client.defaultPermissions.length) {
+          await tx.insert(defaultPermissions).values(client.defaultPermissions.map((permission) => ({
+            applicationId: client.clientId,
+            permission,
+          })));
+        }
+      });
+    }
     await db.delete(oidcClientOrganizations).where(eq(oidcClientOrganizations.clientId, client.clientId));
     await db.insert(oidcClientOrganizations).values(
       linkedOrganizations.map((organization) => ({

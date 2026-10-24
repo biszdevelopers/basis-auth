@@ -9,7 +9,9 @@ import {
   defaultPermissions,
   emailDomainSuffixes,
   oidcClients,
+  oidcPermissions,
   organizations,
+  userApplications,
   userPermissions,
   users,
 } from "../database/schema.js";
@@ -47,7 +49,23 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
           redirectUris: ["https://portal.example.test/callback"],
           public: false,
           scopes: ["nethack.access"],
-          permissions: { "nethack.Projects.read.all": "View all projects" },
+          permissions: {
+            "nethack.Projects.read": "View all projects",
+            "integration.live-default": "A default added after first login",
+          },
+          defaultPermissions: ["nethack.Projects.read"],
+          resources: ["urn:basis:api:projects"],
+          requireConsent: false,
+          organizationIds: ["cbc6e1e2-a6bb-4002-bbdc-6da892a051a7"],
+        },
+        {
+          clientId: "other-app",
+          clientSecret: "other-app-secret-long-enough",
+          redirectUris: ["https://other.example.test/callback"],
+          public: false,
+          scopes: ["nethack.access"],
+          permissions: { "other.Application.read": "Read the other app" },
+          defaultPermissions: ["other.Application.read"],
           resources: ["urn:basis:api:projects"],
           requireConsent: false,
           organizationIds: ["cbc6e1e2-a6bb-4002-bbdc-6da892a051a7"],
@@ -69,7 +87,7 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
     await close?.();
   });
 
-  it("assigns configured clients to the default owner", async () => {
+  it("stores permission definitions separately from client metadata", async () => {
     const [client] = await db.select({ metadata: oidcClients.metadata }).from(oidcClients).limit(1);
 
     expect(client?.metadata).toMatchObject({
@@ -79,21 +97,19 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
           role: "role.ADMIN",
         },
       ],
-      permissions: { "nethack.Projects.read.all": "View all projects" },
     });
+    expect(client?.metadata).not.toHaveProperty("permissions");
+    await expect(db.select().from(oidcPermissions)).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ clientId: "portal", permission: "nethack.Projects.read" }),
+    ]));
   });
 
-  it("stores participant as a global default instead of a per-user grant", async () => {
+  it("stores application-specific defaults and starts without historical affiliations", async () => {
     const defaults = await db.select().from(defaultPermissions);
     expect(defaults).toEqual(expect.arrayContaining([
-      expect.objectContaining({ permission: "participant" }),
+      expect.objectContaining({ applicationId: "portal", permission: "nethack.Projects.read" }),
     ]));
-
-    const personalDefaults = await db
-      .select()
-      .from(userPermissions)
-      .where(eq(userPermissions.permission, "participant"));
-    expect(personalDefaults).toEqual([]);
+    await expect(db.select().from(userApplications)).resolves.toEqual([]);
   });
 
   it("seeds domains and clears user links when a suffix is deleted", async () => {
@@ -168,8 +184,68 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
       sub: user.id,
       aud: "urn:basis:api:projects",
       client_id: "portal",
-      permissions: ["participant"],
+      permissions: ["nethack.Projects.read"],
       gty: "authorization_code",
+    });
+    const defaultRows = await db.select().from(userPermissions).where(eq(userPermissions.userId, user.id));
+    expect(defaultRows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ applicationId: "portal", permission: "nethack.Projects.read" }),
+    ]));
+
+    await db.insert(defaultPermissions).values({
+      applicationId: "portal",
+      permission: "integration.live-default",
+    }).onConflictDoNothing();
+    const repeatPortalLogin = await oauth.startAuthorization({
+      initialUri: "/oauth/authorize",
+      clientId: "portal",
+      redirectUri: "https://portal.example.test/callback",
+      responseType: "code",
+      scope: "openid profile email offline_access nethack.access",
+      resources: ["urn:basis:api:projects"],
+      state: "state-again",
+      nonce: "nonce-again",
+      codeChallenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+      codeChallengeMethod: "S256",
+      session: { userId: user.id, authenticatedAt: new Date() },
+    });
+    const repeatCode = new URL(await oauth.completeAuthorization(repeatPortalLogin.id)).searchParams.get("code")!;
+    const repeated = await oauth.exchangeAuthorizationCode({
+      code: repeatCode,
+      clientId: "portal",
+      clientSecret: "portal-secret-long-enough",
+      redirectUri: "https://portal.example.test/callback",
+      codeVerifier: verifier,
+    });
+    await expect(keys.verifyAccessToken(String(repeated.access_token))).resolves.toMatchObject({
+      client_id: "portal",
+      permissions: ["nethack.Projects.read"],
+    });
+
+    const otherLogin = await oauth.startAuthorization({
+      initialUri: "/oauth/authorize",
+      clientId: "other-app",
+      redirectUri: "https://other.example.test/callback",
+      responseType: "code",
+      scope: "openid profile email offline_access nethack.access",
+      resources: ["urn:basis:api:projects"],
+      state: "other-state",
+      nonce: "other-nonce",
+      codeChallenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+      codeChallengeMethod: "S256",
+      session: { userId: user.id, authenticatedAt: new Date() },
+    });
+    const otherCode = new URL(await oauth.completeAuthorization(otherLogin.id)).searchParams.get("code")!;
+    const otherTokens = await oauth.exchangeAuthorizationCode({
+      code: otherCode,
+      clientId: "other-app",
+      clientSecret: "other-app-secret-long-enough",
+      redirectUri: "https://other.example.test/callback",
+      codeVerifier: verifier,
+    });
+    await expect(keys.verifyAccessToken(String(otherTokens.access_token))).resolves.toMatchObject({
+      client_id: "other-app",
+      permissions: ["other.Application.read"],
     });
     await expect(
       oauth.exchangeAuthorizationCode({
@@ -182,10 +258,6 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
     ).rejects.toMatchObject({ error: "invalid_grant" });
 
     const firstRefresh = String(tokens.refresh_token);
-    await db
-      .insert(defaultPermissions)
-      .values({ permission: "integration.live-default" })
-      .onConflictDoNothing();
     const rotated = await oauth.exchangeRefreshToken({
       refreshToken: firstRefresh,
       clientId: "portal",
@@ -195,11 +267,11 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
       sub: user.id,
       client_id: "portal",
       gty: "refresh_token",
-      permissions: ["integration.live-default", "participant"],
+      permissions: ["nethack.Projects.read"],
     });
     await db
       .delete(defaultPermissions)
-      .where(eq(defaultPermissions.permission, "integration.live-default"));
+      .where(eq(defaultPermissions.applicationId, "portal"));
     await expect(
       oauth.exchangeRefreshToken({
         refreshToken: firstRefresh,

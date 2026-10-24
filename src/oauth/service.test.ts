@@ -26,14 +26,14 @@ function organizationQuery() {
 }
 
 describe("stored client metadata", () => {
-  it("retains descriptive permission definitions", () => {
+  it("ignores legacy permission data in client metadata", () => {
     const parsed = oauthServiceInternals.parseMetadata({
       ...metadata,
       owners: [{ id: "c6ba1588-03bb-4c61-a4e1-3c7c82e919b5", role: "role.ADMIN" }],
       permissions: { "nethack.Projects.submit": "Submit a project" },
     });
 
-    expect(parsed.permissions).toEqual({ "nethack.Projects.submit": "Submit a project" });
+    expect(parsed).not.toHaveProperty("permissions");
   });
 
   it.each([

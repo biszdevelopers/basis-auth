@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { defaultPermissions, userPermissions, users } from "./database/schema.js";
+import { userPermissions } from "./database/schema.js";
 import { createIdentityService, deriveBasisStudentDetails } from "./identity.js";
 
 describe("deriveBasisStudentDetails", () => {
@@ -32,27 +32,21 @@ describe("deriveBasisStudentDetails", () => {
   });
 });
 
-describe("default permissions", () => {
-  it("merges live defaults with user grants, removes duplicates, and sorts them", async () => {
+describe("application-scoped permissions", () => {
+  it("loads only grants for the requested application", async () => {
     const select = vi.fn(() => ({
-      from: (table: unknown) => table === defaultPermissions
-        ? Promise.resolve([
-            { permission: "participant" },
-            { permission: "Assets.Assets.read" },
+      from: (table: unknown) => table === userPermissions
+        ? { where: () => Promise.resolve([
+            { permission: "Assets.Assets.upload" },
             { permission: "Assets.Assets.create" },
-          ])
-        : table === userPermissions
-          ? { where: () => Promise.resolve([
-              { permission: "Assets.Assets.upload" },
-              { permission: "participant" },
-            ]) }
-          : table === users
-            ? {
-                where: () => ({
-                  limit: () => ({ prepare: () => ({ execute: async () => [] }) }),
-                }),
-              }
-          : Promise.reject(new Error("Unexpected table")),
+          ]) }
+        : {
+            where: () => ({
+              limit: () => ({
+                prepare: () => ({ execute: vi.fn() }),
+              }),
+            }),
+          },
     }));
     const identity = createIdentityService(
       { select } as never,
@@ -60,11 +54,9 @@ describe("default permissions", () => {
       [],
     );
 
-    await expect(identity.permissionsFor("user-id")).resolves.toEqual([
+    await expect(identity.permissionsFor("user-id", "assets-app")).resolves.toEqual([
       "Assets.Assets.create",
-      "Assets.Assets.read",
       "Assets.Assets.upload",
-      "participant",
     ]);
   });
 });

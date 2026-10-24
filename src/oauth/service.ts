@@ -2,7 +2,6 @@ import { and, eq, gt, isNull, sql } from "drizzle-orm";
 import {
   EPHEMERAL_LOCALHOST_REDIRECT_PREFIX,
   isEphemeralLocalhostRedirectUri,
-  permissionDefinitionsSchema,
   type AppConfig,
 } from "../config.js";
 import type { Database } from "../database/client.js";
@@ -66,9 +65,7 @@ export function assertClientAllowsEmail(
 }
 
 function parseMetadata(value: Record<string, unknown>): StoredClientMetadata {
-  const permissions = value.permissions === undefined
-    ? {}
-    : permissionDefinitionsSchema.parse(value.permissions);
+  const { permissions: _legacyPermissions, ...metadata } = value;
   const owners = Array.isArray(value.owners)
     ? value.owners.map((owner): ClientOwner | undefined => {
         if (!owner || typeof owner !== "object" || !("id" in owner) || !("role" in owner)) {
@@ -98,11 +95,8 @@ function parseMetadata(value: Record<string, unknown>): StoredClientMetadata {
     throw new Error("Stored client metadata is invalid");
   }
   return {
-    ...value,
+    ...metadata,
     owners: owners as ClientOwner[],
-    // Existing database rows predate permission definitions. They remain
-    // usable until their next seed or TUI edit writes an explicit empty list.
-    permissions,
     resourceScopes,
   } as StoredClientMetadata;
 }
@@ -473,7 +467,10 @@ export function createOAuthService(
       }
       throw new OAuthError("invalid_grant", "User is missing or disabled");
     }
-    const permissions = await identity.permissionsFor(input.userId);
+    if (input.grantType === "authorization_code") {
+      await identity.registerApplicationLogin?.(input.userId, input.clientId);
+    }
+    const permissions = await identity.permissionsFor(input.userId, input.clientId);
     const accessToken = await keys.issueAccessToken(input, { user, permissions });
     const response: Record<string, unknown> = {
       access_token: accessToken,

@@ -3,7 +3,9 @@ import {
   boolean,
   check,
   customType,
+  foreignKey,
   index,
+  integer,
   jsonb,
   pgTable,
   primaryKey,
@@ -71,23 +73,6 @@ export const users = pgTable(
   ],
 );
 
-export const userPermissions = pgTable(
-  "user_permissions",
-  {
-    userId: uuid("user_id")
-      .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
-    permission: text("permission").notNull(),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (table) => [primaryKey({ columns: [table.userId, table.permission] })],
-);
-
-export const defaultPermissions = pgTable("default_permissions", {
-  permission: text("permission").primaryKey(),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
-
 export const oidcClients = pgTable(
   "oidc_clients",
   {
@@ -98,6 +83,7 @@ export const oidcClients = pgTable(
     requireConsent: boolean("require_consent").notNull().default(true),
     filterMode: text("filter_mode").$type<"whitelist" | "blacklist" | null>(),
     filterContent: jsonb("filter_content").notNull().default([]).$type<string[]>(),
+    permissionCatalogVersion: integer("permission_catalog_version").notNull().default(1),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
@@ -105,6 +91,71 @@ export const oidcClients = pgTable(
       "oidc_clients_filter_mode_check",
       sql`${table.filterMode} in ('whitelist', 'blacklist') or ${table.filterMode} is null`,
     ),
+  ],
+);
+
+export const oidcPermissions = pgTable(
+  "oidc_permissions",
+  {
+    clientId: text("client_id")
+      .notNull()
+      .references(() => oidcClients.clientId, { onDelete: "cascade" }),
+    permission: text("permission").notNull(),
+    description: text("description").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.clientId, table.permission] })],
+);
+
+export const userPermissions = pgTable(
+  "user_permissions",
+  {
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    applicationId: text("application_id")
+      .notNull()
+      .references(() => oidcClients.clientId, { onDelete: "cascade" }),
+    permission: text("permission").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.userId, table.applicationId, table.permission] }),
+    index("user_permissions_application_idx").on(table.applicationId, table.userId),
+  ],
+);
+
+export const defaultPermissions = pgTable(
+  "default_permissions",
+  {
+    applicationId: text("application_id").notNull(),
+    permission: text("permission").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.applicationId, table.permission] }),
+    foreignKey({
+      columns: [table.applicationId, table.permission],
+      foreignColumns: [oidcPermissions.clientId, oidcPermissions.permission],
+      name: "default_permissions_catalog_fk",
+    }).onDelete("cascade"),
+  ],
+);
+
+export const userApplications = pgTable(
+  "user_applications",
+  {
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    applicationId: text("application_id")
+      .notNull()
+      .references(() => oidcClients.clientId, { onDelete: "cascade" }),
+    firstLoginAt: timestamp("first_login_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.userId, table.applicationId] }),
+    index("user_applications_application_idx").on(table.applicationId, table.userId),
   ],
 );
 

@@ -1,14 +1,17 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, notInArray, sql } from "drizzle-orm";
 import type { BootstrapPermissionGrant } from "./config.js";
 import type { Database } from "./database/client.js";
 import type { EmailDomainService } from "./database/emailDomains.js";
 import {
   defaultPermissions,
   emailDomainSuffixes,
+  oidcPermissions,
   organizations,
   userPermissions,
+  userApplications,
   users,
 } from "./database/schema.js";
+import { compactPermissionClauses, prunePermissionClauses } from "./permissions.js";
 
 export interface UpstreamIdentity {
   provider: string;
@@ -45,15 +48,73 @@ export function createIdentityService(
   emailDomains: EmailDomainService,
   bootstrapGrants: BootstrapPermissionGrant[],
 ) {
-  async function permissionsFor(userId: string): Promise<string[]> {
-    const [defaults, grants] = await Promise.all([
-      db.select({ permission: defaultPermissions.permission }).from(defaultPermissions),
-      db
+  async function permissionsFor(userId: string, applicationId: string): Promise<string[]> {
+    const grants = await db
+      .select({ permission: userPermissions.permission })
+      .from(userPermissions)
+      .where(and(
+        eq(userPermissions.userId, userId),
+        eq(userPermissions.applicationId, applicationId),
+      ));
+    return [...new Set(grants.map((row) => row.permission))].sort();
+  }
+
+  async function registerApplicationLogin(userId: string, applicationId: string): Promise<void> {
+    await db.transaction(async (tx) => {
+      const [created] = await tx
+        .insert(userApplications)
+        .values({ userId, applicationId })
+        .onConflictDoNothing()
+        .returning({ userId: userApplications.userId });
+      const definitions = await tx
+        .select({ permission: oidcPermissions.permission, description: oidcPermissions.description })
+        .from(oidcPermissions)
+        .where(eq(oidcPermissions.clientId, applicationId));
+
+      if (created) {
+        const defaults = await tx
+          .select({ permission: defaultPermissions.permission })
+          .from(defaultPermissions)
+          .where(eq(defaultPermissions.applicationId, applicationId));
+        if (defaults.length) {
+          const clauses = compactPermissionClauses(
+            defaults.map(({ permission }) => permission),
+            definitions,
+          );
+          await tx.insert(userPermissions).values(clauses.map((permission) => ({
+            userId,
+            applicationId,
+            permission,
+          }))).onConflictDoNothing();
+        }
+      }
+
+      const existing = await tx
         .select({ permission: userPermissions.permission })
         .from(userPermissions)
-        .where(eq(userPermissions.userId, userId)),
-    ]);
-    return [...new Set([...defaults, ...grants].map((row) => row.permission))].sort();
+        .where(and(
+          eq(userPermissions.userId, userId),
+          eq(userPermissions.applicationId, applicationId),
+        ));
+      const keep = prunePermissionClauses(existing.map(({ permission }) => permission), definitions);
+      if (!keep.length) {
+        await tx.delete(userPermissions).where(and(
+          eq(userPermissions.userId, userId),
+          eq(userPermissions.applicationId, applicationId),
+        ));
+      } else {
+        await tx.delete(userPermissions).where(and(
+          eq(userPermissions.userId, userId),
+          eq(userPermissions.applicationId, applicationId),
+          notInArray(userPermissions.permission, keep),
+        ));
+        await tx.insert(userPermissions).values(keep.map((permission) => ({
+          userId,
+          applicationId,
+          permission,
+        }))).onConflictDoNothing();
+      }
+    });
   }
 
   async function upsertFromMicrosoft(identity: UpstreamIdentity) {
@@ -108,7 +169,11 @@ export function createIdentityService(
     if (bootstrap?.permissions.length) {
       await db
         .insert(userPermissions)
-        .values(bootstrap.permissions.map((permission) => ({ userId: user!.id, permission })))
+        .values(bootstrap.permissions.map((permission) => ({
+          userId: user!.id,
+          applicationId: bootstrap.applicationId,
+          permission,
+        })))
         .onConflictDoNothing();
     }
     return user!;
@@ -182,7 +247,7 @@ export function createIdentityService(
   }
 
   return {
-    upsertFromMicrosoft, findAccount, permissionsFor, findUsersByIds, findUser, findUserCompact, organizationForUser,
+    upsertFromMicrosoft, findAccount, permissionsFor, registerApplicationLogin, findUsersByIds, findUser, findUserCompact, organizationForUser,
   };
 }
 

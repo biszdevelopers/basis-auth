@@ -44,9 +44,9 @@ const clientBaseSchema = z.object({
   // only resource-owned scopes.
   scopes: z.array(z.string().min(1)).default([]),
   resourceScopes: z.record(z.string().min(1), z.array(z.string().min(1))).optional(),
-  // Definitions describe globally named user permissions issued to this app.
-  // They deliberately do not constrain grants already stored for a user.
+  // Permission definitions belong to this application and validate its grants.
   permissions: permissionDefinitionsSchema.default({}),
+  defaultPermissions: z.array(z.string().trim().min(1)).default([]),
   resources: z.array(z.string().min(1)).min(1, "Each client must use at least one resource"),
   requireConsent: z.boolean().default(true),
   filterMode: z.enum(["whitelist", "blacklist"]).nullable().default(null),
@@ -58,18 +58,43 @@ const clientBaseSchema = z.object({
 });
 
 function validateEphemeralRedirectUris(
-  client: { public: boolean; redirectUris: string[] },
+  client: {
+    public: boolean;
+    redirectUris: string[];
+    permissions: Record<string, string>;
+    defaultPermissions: string[];
+  },
   context: z.RefinementCtx,
 ): void {
-  if (client.public) return;
-  client.redirectUris.forEach((redirectUri, index) => {
-    if (isEphemeralLocalhostRedirectUri(redirectUri)) {
+  if (!client.public) {
+    client.redirectUris.forEach((redirectUri, index) => {
+      if (isEphemeralLocalhostRedirectUri(redirectUri)) {
+        context.addIssue({
+          code: "custom",
+          path: ["redirectUris", index],
+          message: "Ephemeral localhost redirect URIs are only supported for public clients",
+        });
+      }
+    });
+  }
+  const defined = new Set(Object.keys(client.permissions));
+  const seenDefaults = new Set<string>();
+  client.defaultPermissions.forEach((permission, index) => {
+    if (!defined.has(permission)) {
       context.addIssue({
         code: "custom",
-        path: ["redirectUris", index],
-        message: "Ephemeral localhost redirect URIs are only supported for public clients",
+        path: ["defaultPermissions", index],
+        message: "Default permissions must be explicitly defined by this client",
       });
     }
+    if (seenDefaults.has(permission)) {
+      context.addIssue({
+        code: "custom",
+        path: ["defaultPermissions", index],
+        message: "Default permissions must be unique",
+      });
+    }
+    seenDefaults.add(permission);
   });
 }
 
@@ -86,6 +111,7 @@ export const resourceSchema = z.object({
 
 const bootstrapGrantSchema = z.object({
   email: z.email().transform((email) => email.toLowerCase()),
+  applicationId: z.string().min(1),
   permissions: z.array(z.string().min(1)),
 });
 
@@ -139,6 +165,7 @@ function developmentDemoConfiguration(issuer: string): {
       scopes: [],
       resourceScopes: { [audience]: [] },
       permissions: {},
+      defaultPermissions: [],
       resources: [audience],
       requireConsent: true,
       filterMode: null,
