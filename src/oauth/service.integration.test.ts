@@ -16,6 +16,7 @@ import {
   users,
 } from "../database/schema.js";
 import { createIdentityService, type IdentityService } from "../identity.js";
+import { createInternalApplicationService } from "../internal/applications.js";
 import { createKeyService, type KeyService } from "./keys.js";
 import { createOAuthService, type OAuthService } from "./service.js";
 
@@ -110,6 +111,37 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
       expect.objectContaining({ applicationId: "portal", permission: "nethack.Projects.read" }),
     ]));
     await expect(db.select().from(userApplications)).resolves.toEqual([]);
+  });
+
+  it("manages default permissions atomically", async () => {
+    const applications = createInternalApplicationService(
+      db,
+      config.issuer,
+      () => undefined,
+    );
+    const actor = {
+      id: "c6ba1588-03bb-4c61-a4e1-3c7c82e919b5",
+      permissions: ["BiszPortal.ApplicationPermissions.manage"],
+    };
+    const selected = ["nethack.Projects.read", "integration.live-default"];
+
+    await applications.updateDefaultPermissions("portal", actor, selected);
+    await expect(applications.detail("portal", actor)).resolves.toMatchObject({
+      defaultPermissions: [...selected].sort(),
+    });
+
+    await applications.updateDefaultPermissions("portal", actor, []);
+    await expect(
+      db.select().from(defaultPermissions).where(eq(defaultPermissions.applicationId, "portal")),
+    ).resolves.toEqual([]);
+    await expect(
+      applications.updateDefaultPermissions("portal", actor, ["undefined.permission"]),
+    ).rejects.toMatchObject({ status: 400, code: "invalid_default_permissions" });
+    await expect(
+      applications.updateDefaultPermissions("portal", actor, ["nethack.Projects.read", "nethack.Projects.read"]),
+    ).rejects.toMatchObject({ status: 400, code: "invalid_default_permissions" });
+
+    await applications.updateDefaultPermissions("portal", actor, ["nethack.Projects.read"]);
   });
 
   it("seeds domains and clears user links when a suffix is deleted", async () => {

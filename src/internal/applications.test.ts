@@ -20,6 +20,7 @@ describe("internal application authorization", () => {
     ["delete", () => service.deleteApplication("client", actor)],
     ["rotate credentials", () => service.rotateSecret("client", actor)],
     ["remove credentials", () => service.removeSecret("client", actor)],
+    ["update default permissions", () => service.updateDefaultPermissions("client", actor, [])],
   ])("rejects %s before accessing storage when the delegated permission is absent", async (_name, operation) => {
     await expect(operation()).rejects.toMatchObject({ status: 403, code: "forbidden" });
   });

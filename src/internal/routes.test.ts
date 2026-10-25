@@ -198,4 +198,74 @@ describe("internal application HTTP API", () => {
     expect(response.status).toBe(403);
     expect(deleteApplication).not.toHaveBeenCalled();
   });
+
+  it("replaces default grant permissions and returns refreshed application details", async () => {
+    const updateDefaultPermissions = vi.fn().mockResolvedValue(undefined);
+    const detail = vi.fn().mockResolvedValue({
+      clientId: "client",
+      defaultPermissions: ["Example.read"],
+    });
+    const applications = {
+      updateDefaultPermissions,
+      detail,
+    } as unknown as InternalApplicationService;
+    const permissions = ["BiszPortal.ApplicationPermissions.manage"];
+    const verify = vi.fn().mockResolvedValue({
+      sub: user.id,
+      client_id: "portal-client",
+      scope: "noesis.access",
+      permissions,
+      gty: "authorization_code",
+    });
+    const response = await managementApp(applications, verify).request(
+      "/internal/applications/client/default-permissions",
+      {
+        method: "PUT",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "x-basis-actor-token": "Bearer actor",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ permissions: ["Example.read"] }),
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(updateDefaultPermissions).toHaveBeenCalledWith(
+      "client",
+      { id: user.id, permissions },
+      ["Example.read"],
+    );
+    expect(detail).toHaveBeenCalledWith("client", { id: user.id, permissions });
+    expect(await response.json()).toMatchObject({
+      application: { defaultPermissions: ["Example.read"] },
+    });
+  });
+
+  it("rejects duplicate default grant permissions before calling the service", async () => {
+    const updateDefaultPermissions = vi.fn();
+    const applications = { updateDefaultPermissions } as unknown as InternalApplicationService;
+    const verify = vi.fn().mockResolvedValue({
+      sub: user.id,
+      client_id: "portal-client",
+      scope: "noesis.access",
+      permissions: ["BiszPortal.ApplicationPermissions.manage"],
+      gty: "authorization_code",
+    });
+    const response = await managementApp(applications, verify).request(
+      "/internal/applications/client/default-permissions",
+      {
+        method: "PUT",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "x-basis-actor-token": "Bearer actor",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ permissions: ["Example.read", "Example.read"] }),
+      },
+    );
+
+    expect(response.status).toBe(400);
+    expect(updateDefaultPermissions).not.toHaveBeenCalled();
+  });
 });

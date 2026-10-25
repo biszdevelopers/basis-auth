@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useState, type ReactNode } from "react";
 import { X } from "lucide-react";
 import { Toast } from "radix-ui";
 
@@ -17,18 +17,25 @@ export function useToast() {
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [message, setMessage] = useState<ToastMessage>();
+  const [open, setOpen] = useState(false);
+
+  const toast = useCallback((next: ToastMessage) => {
+    setMessage(next);
+    setOpen(true);
+  }, []);
 
   return (
     <Toast.Provider duration={5_000}>
-      <ToastContext.Provider value={{ toast: setMessage }}>
+      <ToastContext.Provider value={{ toast }}>
         {children}
       </ToastContext.Provider>
       <Toast.Root
-        open={Boolean(message)}
-        onOpenChange={(open) => {
-          if (!open) setMessage(undefined);
+        open={open}
+        onOpenChange={setOpen}
+        onAnimationEnd={(event) => {
+          if (event.currentTarget.dataset.state === "closed") setMessage(undefined);
         }}
-        className="grid w-full max-w-sm grid-cols-[1fr_auto] gap-x-4 rounded-xl border border-destructive/30 bg-card p-4 text-card-foreground shadow-lg"
+        className="toast-slide grid w-full max-w-sm grid-cols-[1fr_auto] gap-x-4 rounded-xl border border-destructive/30 bg-card p-4 text-card-foreground shadow-lg"
       >
         <div className="grid gap-1">
           <Toast.Title className="text-sm font-semibold text-destructive">{message?.title}</Toast.Title>

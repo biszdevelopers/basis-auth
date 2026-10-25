@@ -226,6 +226,16 @@ export function createInternalApp(token: string, users: InternalUserService, man
       await management.applications.deletePermission(c.req.param("clientId"), who, body.permission);
       return { application: await management.applications.detail(c.req.param("clientId"), who) };
     }));
+    app.put("/internal/applications/:clientId/default-permissions", async (c) => managed(c, async (who) => {
+      const body = z.object({
+        permissions: z.array(z.string().trim().min(1)).refine(
+          (permissions) => new Set(permissions).size === permissions.length,
+          "Default permissions must be unique",
+        ),
+      }).parse(await c.req.json());
+      await management.applications.updateDefaultPermissions(c.req.param("clientId"), who, body.permissions);
+      return { application: await management.applications.detail(c.req.param("clientId"), who) };
+    }));
     app.put("/internal/applications/:clientId/redirect-uris", async (c) => managed(c, async (who) => {
       const body = z.object({ redirectUris: z.array(z.string().min(1)).min(1) }).parse(await c.req.json());
       await management.applications.updateRedirectUris(c.req.param("clientId"), who, body.redirectUris);

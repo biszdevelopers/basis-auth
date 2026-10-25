@@ -3,7 +3,7 @@ import { DelegatedPermissionSet, type Permission } from "@basis/schema/permissio
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { isEphemeralLocalhostRedirectUri } from "../config.js";
 import type { Database } from "../database/client.js";
-import { oidcClientOrganizations, oidcClients, oidcPermissions, organizations, resourceServers, users } from "../database/schema.js";
+import { defaultPermissions, oidcClientOrganizations, oidcClients, oidcPermissions, organizations, resourceServers, users } from "../database/schema.js";
 import { hashClientSecret, type ClientOwner, type StoredClientMetadata } from "../database/seed.js";
 
 export const applicationPermissions = {
@@ -155,7 +155,7 @@ export function createInternalApplicationService(db: Database, issuer: string, i
 
   async function detail(clientId: string, actor: ApplicationActor) {
     const { row, metadata, membership } = await accessible(clientId, actor);
-    const [resources, allClients, linkedOrganizations, availableOrganizations, permissions] = await Promise.all([
+    const [resources, allClients, linkedOrganizations, availableOrganizations, permissions, defaults] = await Promise.all([
       db.select().from(resourceServers).where(inArray(resourceServers.audience, row.resources)),
       db.select({ clientId: oidcClients.clientId, resources: oidcClients.resources }).from(oidcClients),
       db.select({ organizationId: organizations.organizationId }).from(oidcClientOrganizations)
@@ -164,6 +164,8 @@ export function createInternalApplicationService(db: Database, issuer: string, i
       db.select({ organizationId: organizations.organizationId, firstParty: organizations.firstParty }).from(organizations),
       db.select({ permission: oidcPermissions.permission, description: oidcPermissions.description })
         .from(oidcPermissions).where(eq(oidcPermissions.clientId, clientId)),
+      db.select({ permission: defaultPermissions.permission })
+        .from(defaultPermissions).where(eq(defaultPermissions.applicationId, clientId)),
     ]);
     const ownerIds = metadata.owners.map((owner) => owner.id);
     const people = ownerIds.length ? await db.select({
@@ -209,6 +211,7 @@ export function createInternalApplicationService(db: Database, issuer: string, i
       })),
       availableResources: (await db.select().from(resourceServers)).map((resource) => ({ resourceId: resource.audience, name: resource.name, availableScopes: resource.scopes })),
       permissions,
+      defaultPermissions: defaults.map(({ permission }) => permission).sort(),
       redirectUris: metadata.redirectUris,
     };
   }
@@ -386,6 +389,29 @@ export function createInternalApplicationService(db: Database, issuer: string, i
     });
   }
 
+  async function updateDefaultPermissions(clientId: string, actor: ApplicationActor, permissions: string[]) {
+    await accessible(clientId, actor, applicationPermissions.permissions);
+    if (new Set(permissions).size !== permissions.length) {
+      throw new InternalApplicationError(400, "invalid_default_permissions", "Default permissions must be unique");
+    }
+    await db.transaction(async (tx) => {
+      const definitions = await tx.select({ permission: oidcPermissions.permission })
+        .from(oidcPermissions).where(eq(oidcPermissions.clientId, clientId));
+      const defined = new Set(definitions.map(({ permission }) => permission));
+      if (permissions.some((permission) => !defined.has(permission))) {
+        throw new InternalApplicationError(400, "invalid_default_permissions", "Default permissions must be defined by this application");
+      }
+      await tx.delete(defaultPermissions).where(eq(defaultPermissions.applicationId, clientId));
+      if (permissions.length) {
+        await tx.insert(defaultPermissions).values(permissions.map((permission) => ({
+          applicationId: clientId,
+          permission,
+        })));
+      }
+      await tx.update(oidcClients).set({ updatedAt: new Date() }).where(eq(oidcClients.clientId, clientId));
+    });
+  }
+
   async function updateRedirectUris(clientId: string, actor: ApplicationActor, redirectUris: string[]) {
     const { metadata } = await accessible(clientId, actor, applicationPermissions.redirects);
     const values = unique(redirectUris);
@@ -393,7 +419,7 @@ export function createInternalApplicationService(db: Database, issuer: string, i
     await saveMetadata(clientId, { ...metadata, redirectUris: values });
   }
 
-  return { list, listOrganizations, detail, createApplication, updateApplication, deleteApplication, rotateSecret, removeSecret, addOwner, updateOwner, removeOwner, attachResource, createResource, updateResource, removeResource, updateScopes, createPermission, updatePermission, deletePermission, updateRedirectUris };
+  return { list, listOrganizations, detail, createApplication, updateApplication, deleteApplication, rotateSecret, removeSecret, addOwner, updateOwner, removeOwner, attachResource, createResource, updateResource, removeResource, updateScopes, createPermission, updatePermission, deletePermission, updateDefaultPermissions, updateRedirectUris };
 }
 
 export type InternalApplicationService = ReturnType<typeof createInternalApplicationService>;
