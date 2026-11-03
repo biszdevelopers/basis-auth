@@ -122,6 +122,7 @@ const optionalJsonArray = z.preprocess(
 
 const environmentSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
+  RELEASE_ID: z.string().trim().min(1).default("development"),
   PORT: z.coerce.number().int().positive().default(3000),
   DATABASE_URL: z.string().min(1),
   INTERNAL_API_HOST: z.string().min(1).default("127.0.0.1"),
@@ -178,6 +179,7 @@ function developmentDemoConfiguration(issuer: string): {
 
 export interface AppConfig {
   environment: "development" | "test" | "production";
+  release: string;
   port: number;
   databaseUrl: string;
   internalApiHost: string;
@@ -329,6 +331,7 @@ export async function loadConfig(source: NodeJS.ProcessEnv = process.env): Promi
 
   return {
     environment: env.NODE_ENV,
+    release: env.RELEASE_ID,
     port: env.PORT,
     databaseUrl: env.DATABASE_URL,
     internalApiHost: env.INTERNAL_API_HOST,

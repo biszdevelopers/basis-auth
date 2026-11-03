@@ -1,5 +1,6 @@
 import { createHmac } from "node:crypto";
 import { APIError as SchemaAPIError } from "@basis/schema/api";
+import { devConnectStatusSchema } from "@basis/schema/devconnect-status";
 import { describe, expect, it, vi } from "vitest";
 import { createApp } from "./app.js";
 import type { AppConfig } from "./config.js";
@@ -12,6 +13,7 @@ import { OAuthError } from "./oauth/errors.js";
 
 const config = {
   environment: "test",
+  release: "test-release",
   issuer: "https://auth.example.test",
   cookieKeys: ["a".repeat(32)],
   microsoft: undefined,
@@ -25,6 +27,23 @@ const app = createApp(
   {} as IdentityService,
   {} as MicrosoftService,
 );
+
+describe("DevConnect status", () => {
+  it("publishes the shared service status contract", async () => {
+    const response = await app.request("/.devconnect/status");
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(devConnectStatusSchema.parse(await response.json())).toMatchObject({
+      status: 200,
+      code: "healthy",
+      schema_version: "1",
+      service: "basis-auth",
+      release: "test-release",
+      state: "healthy",
+    });
+  });
+});
 
 describe("protocol metadata", () => {
   it("publishes the configured /oauth endpoints", async () => {

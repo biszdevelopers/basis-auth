@@ -26,10 +26,16 @@ const base = {
 describe("configuration", () => {
   it("normalizes the issuer and validates client resources", async () => {
     const config = await loadConfig(base);
+    expect(config.release).toBe("development");
     expect(config.issuer).toBe("https://auth.example.test");
     expect(config.clients[0]?.clientId).toBe("test-client");
     expect(config.clients[0]?.organizationIds).toEqual(["cbc6e1e2-a6bb-4002-bbdc-6da892a051a7"]);
     expect(config.jwks.keys[0]?.d).toBeTypeOf("string");
+  });
+
+  it("loads the deployment release identifier", async () => {
+    const config = await loadConfig({ ...base, RELEASE_ID: "2026.11.3-abc123" });
+    expect(config.release).toBe("2026.11.3-abc123");
   });
 
   it("validates non-empty, unique client organization IDs", async () => {

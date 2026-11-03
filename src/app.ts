@@ -1,5 +1,9 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import {
+  DEVCONNECT_STATUS_PATH,
+  renderDevConnectStatus,
+} from "@basis/schema/devconnect-status";
 import { renderErrorPage } from "@basis/schema/error-page";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { decodeJwt, decodeProtectedHeader } from "jose";
@@ -254,6 +258,11 @@ export function createApp(
   });
   app.use("*", secureHeaders());
   app.get("/health", (c) => c.json({ status: "ok" }));
+  app.get(DEVCONNECT_STATUS_PATH, () =>
+    renderDevConnectStatus({
+      service: "basis-auth",
+      release: config.release,
+    }));
 
   app.get("/", async (c) => {
     if (config.environment === "development") {
