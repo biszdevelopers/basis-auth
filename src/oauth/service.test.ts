@@ -430,7 +430,7 @@ describe("client credentials grant", () => {
     } as unknown as Parameters<typeof createOAuthService>[1];
     const issueApplicationAccessToken = vi.fn(async () => "application-token");
     const service = createOAuthService(
-      { issuer: "https://auth.example.test" } as AppConfig,
+      { issuer: "https://auth.example.test", accessTokenLifetimeSeconds: 42 } as AppConfig,
       db,
       { issueApplicationAccessToken } as unknown as KeyService,
       {} as IdentityService,
@@ -444,7 +444,7 @@ describe("client credentials grant", () => {
     })).resolves.toEqual({
       access_token: "application-token",
       token_type: "Bearer",
-      expires_in: 600,
+      expires_in: 42,
       scope: "projects.read",
     });
     expect(issueApplicationAccessToken).toHaveBeenCalledWith({

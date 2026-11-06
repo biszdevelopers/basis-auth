@@ -77,7 +77,7 @@ export async function createKeyService(config: AppConfig, identity: IdentityServ
     return token
       .setJti(crypto.randomUUID())
       .setIssuedAt()
-      .setExpirationTime("10m")
+      .setExpirationTime(`${config.accessTokenLifetimeSeconds}s`)
       .sign(signingKey);
   }
 
@@ -98,7 +98,7 @@ export async function createKeyService(config: AppConfig, identity: IdentityServ
       .setAudience(input.resource)
       .setJti(crypto.randomUUID())
       .setIssuedAt()
-      .setExpirationTime("10m")
+      .setExpirationTime(`${config.accessTokenLifetimeSeconds}s`)
       .sign(signingKey);
   }
 

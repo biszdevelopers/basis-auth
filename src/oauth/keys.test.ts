@@ -5,7 +5,11 @@ import type { IdentityService } from "../identity.js";
 import { createKeyService } from "./keys.js";
 
 function buildConfig(): AppConfig {
-  return { issuer: "https://auth.example.test", jwks: { keys: [{} as never] } } as unknown as AppConfig;
+  return {
+    issuer: "https://auth.example.test",
+    accessTokenLifetimeSeconds: 600,
+    jwks: { keys: [{} as never] },
+  } as unknown as AppConfig;
 }
 
 async function rsaJwk() {
@@ -90,6 +94,35 @@ describe("ID token claims", () => {
 });
 
 describe("access-token user state", () => {
+  it("uses the configured lifetime for user and application access tokens", async () => {
+    const config = buildConfig();
+    config.accessTokenLifetimeSeconds = 42;
+    const jwk = await rsaJwk();
+    (config.jwks as { keys: unknown[] }).keys = [jwk];
+    const user = { id: USER_ID, disabled: false, tokensValidAfter: null };
+    const identity = {
+      findUser: async () => user,
+      permissionsFor: async () => [],
+    } as unknown as IdentityService;
+    const keys = await createKeyService(config, identity);
+
+    const userToken = await keys.issueAccessToken({
+      userId: USER_ID,
+      clientId: "user-client",
+      scopes: ["openid"],
+    });
+    const applicationToken = await keys.issueApplicationAccessToken({
+      clientId: "application-id",
+      scopes: ["projects.read"],
+      resource: "urn:basis:api:projects",
+    });
+
+    for (const token of [userToken, applicationToken]) {
+      const claims = decodeJwt(token);
+      expect(claims.exp! - claims.iat!).toBe(42);
+    }
+  });
+
   it("issues and verifies client-credentials tokens without a user", async () => {
     const config = buildConfig();
     const jwk = await rsaJwk();

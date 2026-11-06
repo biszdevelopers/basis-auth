@@ -475,7 +475,7 @@ export function createOAuthService(
     const response: Record<string, unknown> = {
       access_token: accessToken,
       token_type: "Bearer",
-      expires_in: 600,
+      expires_in: config.accessTokenLifetimeSeconds,
       scope: input.scopes.join(" "),
     };
     if (input.nonce && input.authenticatedAt) {
@@ -641,7 +641,7 @@ export function createOAuthService(
         resource,
       }),
       token_type: "Bearer",
-      expires_in: 600,
+      expires_in: config.accessTokenLifetimeSeconds,
       scope: scopes.join(" "),
     };
   }
