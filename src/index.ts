@@ -14,8 +14,16 @@ import { createSessionService } from "./oauth/sessions.js";
 import { createInternalUserService } from "./internal/users.js";
 import { createInternalApp } from "./internal/app.js";
 import { createInternalApplicationService } from "./internal/applications.js";
+import { serverIdentity } from "./serverIdentity.js";
 
 const config = await loadConfig();
+const startupIdentity = serverIdentity(config.environment, config.databaseUrl);
+const database = startupIdentity.database
+  ? `${startupIdentity.database.host}:${startupIdentity.database.port}/${startupIdentity.database.database ?? "unknown"}`
+  : "unknown";
+console.log(
+  `basis-auth ${startupIdentity.version} (${startupIdentity.commit ?? "commit unknown"}) database ${database} started ${startupIdentity.startedAt}`,
+);
 await migrateDatabase(config.databaseUrl);
 const { db, pool } = createDatabase(config.databaseUrl);
 await seedConfiguration(db, config.clients, config.resources);
