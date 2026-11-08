@@ -26,6 +26,36 @@ const app = createApp(
   {} as MicrosoftService,
 );
 
+describe("health identity", () => {
+  it("reports the build and a sanitized database identity", async () => {
+    const healthApp = createApp(
+      {
+        ...config,
+        environment: "test",
+        databaseUrl: "postgresql://basis_user:super-secret@db.example.test:6543/basis_auth",
+      } as AppConfig,
+      {} as OAuthService,
+      { publicJwks: { keys: [] } } as unknown as KeyService,
+      {} as SessionService,
+      {} as IdentityService,
+      {} as MicrosoftService,
+    );
+
+    const response = await healthApp.request("/health");
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toMatchObject({
+      status: "ok",
+      environment: "test",
+      database: { host: "db.example.test", port: 6543, database: "basis_auth" },
+    });
+    expect(typeof body.version).toBe("string");
+    expect(Number.isNaN(Date.parse(body.startedAt))).toBe(false);
+    expect(JSON.stringify(body)).not.toContain("super-secret");
+  });
+});
+
 describe("protocol metadata", () => {
   it("publishes the configured /oauth endpoints", async () => {
     const response = await app.request("/.well-known/openid-configuration");
