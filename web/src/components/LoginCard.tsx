@@ -164,11 +164,6 @@ export function LoginCard({
     };
 
     useEffect(() => {
-        if (stat === undefined) return;
-        console.log("status changed", stat);
-    }, [stat]);
-
-    useEffect(() => {
         if (!stat.error) return;
         console.error(`${stat.error.error_description} (${stat.error.code})`);
     }, [stat.error]);
