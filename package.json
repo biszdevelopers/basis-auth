@@ -25,6 +25,7 @@
     "clients": "tsx scripts/clients.ts",
     "clients:add": "tsx scripts/add-client.ts",
     "clients:remove": "tsx scripts/remove-client.ts",
+    "clients:doctor": "tsx scripts/client-doctor.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/database/migrate.ts"
   },
