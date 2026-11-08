@@ -321,6 +321,9 @@ export async function loadConfig(source: NodeJS.ProcessEnv = process.env): Promi
   if (cookieKeys.some((key) => placeholderPattern.test(key))) {
     throw new Error("OIDC_COOKIE_KEYS must be replaced with real randomly generated values");
   }
+  if (placeholderPattern.test(env.INTERNAL_API_TOKEN)) {
+    throw new Error("INTERNAL_API_TOKEN must be replaced with a real randomly generated value");
+  }
   if (env.NODE_ENV === "production" && cookieKeys.length < 2) {
     throw new Error("At least two OIDC cookie keys are required in production");
   }
