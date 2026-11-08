@@ -23,8 +23,11 @@ export async function secretMatches(secret: string, encoded: string | null): Pro
   if (!encoded) return false;
   const [algorithm, saltValue, digestValue] = encoded.split(":");
   if (algorithm !== "scrypt" || !saltValue || !digestValue) return false;
+  const salt = Buffer.from(saltValue, "base64url");
   const expected = Buffer.from(digestValue, "base64url");
-  const actual = (await scrypt(secret, Buffer.from(saltValue, "base64url"), expected.length)) as Buffer;
+  if (salt.length < 8 || salt.length > 64) return false;
+  if (expected.length < 32 || expected.length > 64) return false;
+  const actual = (await scrypt(secret, salt, expected.length)) as Buffer;
   return expected.length === actual.length && timingSafeEqual(expected, actual);
 }
 
