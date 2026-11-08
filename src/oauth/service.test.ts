@@ -140,9 +140,22 @@ describe("client lookup", () => {
   });
 
   it("serves repeated lookups from the in-memory cache", async () => {
-    await service.getClientInformation("client-1");
-    await service.getClientInformation("client-1");
-    expect(execute).toHaveBeenCalledTimes(1);
+    const repeatedExecute = vi.fn(async () => [clientRow]);
+    const repeatedDb = {
+      select: () => ({ from: (table: unknown) => table === oidcClientOrganizations
+        ? organizationQuery()
+        : ({ where: () => ({ limit: () => ({ prepare: () => ({ execute: repeatedExecute }) }) }) }) }),
+    } as unknown as Parameters<typeof createOAuthService>[1];
+    const repeatedService = createOAuthService(
+      config,
+      repeatedDb,
+      {} as KeyService,
+      { findUsersByIds } as unknown as IdentityService,
+    );
+
+    await repeatedService.getClientInformation("client-1");
+    await repeatedService.getClientInformation("client-1");
+    expect(repeatedExecute).toHaveBeenCalledTimes(1);
   });
 
   it("throws when the client does not exist", async () => {
