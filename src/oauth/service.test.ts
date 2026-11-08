@@ -155,7 +155,28 @@ describe("client lookup", () => {
     const missingService = createOAuthService(config, missingDb, {} as KeyService, {} as IdentityService);
     await expect(missingService.getClientInformation("missing")).rejects.toMatchObject({
       status: 404,
-      message: expect.stringContaining("not registered or has been disabled"),
+      code: 14001,
+      message: expect.stringContaining("is not registered"),
+    });
+  });
+
+  it("reports a disabled client distinctly from a missing one", async () => {
+    const disabledRow = {
+      ...clientRow,
+      metadata: { ...clientRow.metadata, disabled: true },
+    };
+    const disabled = vi.fn(async () => [disabledRow]);
+    const disabledDb = {
+      select: () => ({ from: (table: unknown) => table === oidcClientOrganizations
+        ? organizationQuery()
+        : ({ where: () => ({ limit: () => ({ prepare: () => ({ execute: disabled }) }) }) }) }),
+    } as unknown as Parameters<typeof createOAuthService>[1];
+    const disabledService = createOAuthService(config, disabledDb, {} as KeyService, {} as IdentityService);
+
+    await expect(disabledService.getClientInformation("client-1")).rejects.toMatchObject({
+      status: 404,
+      code: 14002,
+      message: expect.stringContaining("is disabled"),
     });
   });
 });
