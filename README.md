@@ -28,7 +28,7 @@ Protocol endpoints:
 
 Access tokens are ten-minute RS256 JWTs with `typ=at+jwt`. Their `aud` identifies the resource API, while `client_id` identifies the requesting application. Resource APIs validate them locally with the published JWKS.
 
-`GET /health` reports the package version, optional commit, start time, environment, and the resolved database host, port, and name with credentials and query parameters removed.
+`GET /health` reports the package version, optional commit, start time, environment, process ID, and the resolved database host, port, and name with credentials and query parameters removed. Startup logs include the bound port and process ID.
 
 ## Local setup
 
@@ -122,10 +122,17 @@ If a client exists in the database but a running server returns `14001`, compare
 
 ```bash
 curl -s https://auth.example/health
-bun run clients:doctor <clientId> https://auth.example
+bun run clients:doctor <clientId> https://auth.example http://localhost:3000
 ```
 
-`clients:doctor` prints the local client row, the server identity, and the live `/oauth/clients/:id` response. It warns when the local client was written after the server started, which usually means the server or reverse-proxy origin is stale.
+`clients:doctor` accepts one or more server URLs, prints the local client row and each server identity, and checks the live `/oauth/clients/:id` response. It warns when a server does not expose build identity, when the databases differ, or when the local client was written after the server started. Those warnings usually mean the server or reverse-proxy origin is stale.
+
+Security notes:
+
+- Redirect URIs must use HTTP or HTTPS, cannot embed credentials, and may use the ephemeral localhost form only for public clients.
+- `X-Forwarded-For` and `X-Real-IP` are trusted only when the socket peer is a loopback or private proxy. A public reverse proxy must overwrite those headers.
+- `INTERNAL_API_TOKEN` values copied from `.env.example` are rejected; use a random value.
+- Microsoft profile-picture fetches are limited to HTTPS Microsoft hosts, three redirects, five seconds, and 5 MB.
 
 ## Downstream BFF integration
 
