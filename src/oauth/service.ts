@@ -10,7 +10,7 @@ import {
   type ClientOwner,
   type StoredClientMetadata,
 } from "../database/seed.js";
-import { createClientCache, type ClientCache } from "./clientCache.js";
+import { createClientCache, type CachedClient, type ClientCache } from "./clientCache.js";
 import {
   authorizationCodes,
   authorizationConsents,
@@ -153,9 +153,22 @@ export function createOAuthService(
 
   const clientCache: ClientCache = createClientCache(clientById, { ttlMs: 60_000 });
 
+  function requireClient(
+    client: CachedClient | undefined,
+    clientId: string,
+    status: 400 | 401 | 404,
+  ): CachedClient {
+    if (!client) {
+      throw new OAuthError("invalid_client", `Client "${clientId}" is not registered.`, status, 14001);
+    }
+    if (client.metadata.disabled) {
+      throw new OAuthError("invalid_client", `Client "${clientId}" is disabled.`, status, 14002);
+    }
+    return client;
+  }
+
   async function authenticateClient(clientId: string, secret?: string) {
-    const client = await clientCache.get(clientId);
-    if (!client) throw new OAuthError("invalid_client", `Client "${clientId}" is not registered or has been disabled.`, 401, 14001);
+    const client = requireClient(await clientCache.get(clientId), clientId, 401);
     if (client.metadata.public) {
       if (secret) throw new OAuthError("invalid_client", "Public clients must not send a secret", 401, 14003);
     } else if (!secret || !(await secretMatches(secret, client.secretHash))) {
@@ -178,8 +191,7 @@ export function createOAuthService(
     session?: { userId: string; authenticatedAt: Date };
   }) {
     if (!input.clientId) throw new OAuthError("invalid_request", "client_id is required");
-    const client = await clientCache.get(input.clientId);
-    if (!client) throw new OAuthError("invalid_request", `Client "${input.clientId}" is not registered or has been disabled.`, 400, 14001);
+    const client = requireClient(await clientCache.get(input.clientId), input.clientId, 400);
     const redirectUri = input.redirectUri;
     if (!redirectUri || !redirectUriMatches(client, redirectUri)) {
       throw new OAuthError("invalid_request", `Redirect URI "${input.redirectUri}" is not registered for client "${client.metadata.name}"`, 400, 14100);
@@ -272,8 +284,7 @@ export function createOAuthService(
       )
       .limit(1);
     if (!request) throw new OAuthError("invalid_request", "Interaction is invalid or expired", 404, 2400);
-    const client = await clientCache.get(request.clientId);
-    if (!client) throw new OAuthError("invalid_request", "Client no longer exists", 400, 14001);
+    const client = requireClient(await clientCache.get(request.clientId), request.clientId, 400);
     return { request, client };
   }
 
@@ -294,8 +305,7 @@ export function createOAuthService(
   }
 
   async function getClientInformation(clientId: string) {
-    const client = await clientCache.get(clientId);
-    if (!client) throw new OAuthError("invalid_request", `Client "${clientId}" is not registered or has been disabled.`, 404, 14001);
+    const client = requireClient(await clientCache.get(clientId), clientId, 404);
     const ownerIds = client.metadata.owners.map((owner) => owner.id);
     const people = await identity.findUsersByIds(ownerIds);
     const peopleById = new Map(people.map((person) => [person.id, person]));

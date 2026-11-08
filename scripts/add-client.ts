@@ -16,7 +16,13 @@ try {
       parsed.clientSecret = generatedSecret;
     }
     const input = clientInputSchema.parse(parsed);
-    const client = await saveClient(db, input);
+    const resourceScopes = new Map(
+      input.resources.map((resource) => [
+        resource,
+        input.resourceScopes?.[resource] ?? input.scopes,
+      ]),
+    );
+    const client = await saveClient(db, input, resourceScopes);
     process.stdout.write(`${client.clientId}\n`);
     if (generatedSecret) {
       process.stdout.write(`Client secret (copy now, only a hash is stored): ${generatedSecret}\n`);

@@ -15,10 +15,12 @@ import { createDatabase, type Database } from "../src/database/client.js";
 import {
   hashClientSecret,
   seedConfiguration,
+  syncPermissionCatalog,
   type ClientOwner,
   type StoredClientMetadata,
 } from "../src/database/seed.js";
-import { oidcClientOrganizations, oidcClients, organizations, resourceServers } from "../src/database/schema.js";
+import { oidcClientOrganizations, oidcClients, oidcPermissions, organizations, resourceServers } from "../src/database/schema.js";
+import { databaseIdentity } from "../src/serverIdentity.js";
 
 // ponytail: stdlib readline TUI; no prompt dependency.
 // Runtime visibility (see src/oauth/service.ts, src/oauth/clientCache.ts):
@@ -39,6 +41,12 @@ export function splitList(value: string): string[] {
 
 export function requireDatabase() {
   if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL is required");
+  const identity = databaseIdentity(process.env.DATABASE_URL);
+  if (identity) {
+    process.stdout.write(
+      `Database ${identity.host}:${identity.port}/${identity.database ?? "unknown"}\n`,
+    );
+  }
   return createDatabase(process.env.DATABASE_URL);
 }
 
@@ -72,6 +80,7 @@ export interface ListedClient {
   clientId: string;
   name: string;
   public: boolean;
+  disabled: boolean;
   redirectUris: string[];
   resources: string[];
   permissionDefinitionCount: number;
@@ -84,6 +93,9 @@ export async function listClients(db: Database): Promise<ListedClient[]> {
     .select({ clientId: oidcClientOrganizations.clientId, organizationId: organizations.organizationId })
     .from(oidcClientOrganizations)
     .innerJoin(organizations, eq(oidcClientOrganizations.organizationId, organizations.id));
+  const definitions = await db
+    .select({ clientId: oidcPermissions.clientId, permission: oidcPermissions.permission })
+    .from(oidcPermissions);
   return rows
     .map((row) => {
       const metadata = row.metadata as Partial<StoredClientMetadata>;
@@ -91,9 +103,12 @@ export async function listClients(db: Database): Promise<ListedClient[]> {
         clientId: row.clientId,
         name: metadata.name || row.clientId,
         public: metadata.public ?? row.secretHash === null,
+        disabled: metadata.disabled === true,
         redirectUris: metadata.redirectUris ?? [],
         resources: row.resources ?? [],
-        permissionDefinitionCount: Object.keys(metadata.permissions ?? {}).length,
+        permissionDefinitionCount: definitions.filter(
+          (definition) => definition.clientId === row.clientId,
+        ).length,
         organizationIds: links
           .filter((link) => link.clientId === row.clientId)
           .map((link) => link.organizationId),
@@ -117,7 +132,9 @@ export function printClients(clients: ListedClient[], known: Set<string>): void 
     return;
   }
   clients.forEach((client, index) => {
-    process.stdout.write(`${index + 1}) ${client.name} (${client.clientId})${client.public ? " [public]" : ""}\n`);
+    process.stdout.write(
+      `${index + 1}) ${client.name} (${client.clientId})${client.public ? " [public]" : ""}${client.disabled ? " [disabled]" : ""}\n`,
+    );
     if (client.redirectUris.length) process.stdout.write(`   redirects: ${client.redirectUris.join(", ")}\n`);
     if (client.resources.length) process.stdout.write(`   resources: ${client.resources.join(", ")}\n`);
     process.stdout.write(`   permission definitions: ${client.permissionDefinitionCount}\n`);
@@ -244,6 +261,7 @@ async function promptMissingResourceScopes(
 function printClientSummary(input: {
   name?: string;
   public: boolean;
+  disabled?: boolean;
   redirectUris: string[];
   resources: string[];
   scopes: string[];
@@ -255,6 +273,7 @@ function printClientSummary(input: {
 }): void {
   process.stdout.write(
     `\nName: ${input.name ?? "(none)"}\nType: ${input.public ? "public" : "confidential"}\n` +
+      `Disabled: ${input.disabled ? "yes" : "no"}\n` +
       `Redirects: ${input.redirectUris.join(", ")}\nResources: ${input.resources.join(", ")}\n` +
       `Scopes: ${input.scopes.join(", ")}\nConsent: ${input.requireConsent ? "shown" : "skipped"}\n` +
       `Permission definitions: ${Object.keys(input.permissions).length}\n` +
@@ -387,6 +406,7 @@ export interface ClientDetail {
   clientId: string;
   name: string;
   public: boolean;
+  disabled: boolean;
   hasSecret: boolean;
   redirectUris: string[];
   scopes: string[];
@@ -403,14 +423,24 @@ export async function getClientDetail(db: Database, clientId: string): Promise<C
   const [row] = await db.select().from(oidcClients).where(eq(oidcClients.clientId, clientId)).limit(1);
   if (!row) throw new Error(`Client ${clientId} does not exist`);
   const metadata = row.metadata as Partial<StoredClientMetadata>;
+  const definitions = await db
+    .select({ permission: oidcPermissions.permission, description: oidcPermissions.description })
+    .from(oidcPermissions)
+    .where(eq(oidcPermissions.clientId, clientId));
+  const legacyDefinitions = metadata.permissions && typeof metadata.permissions === "object"
+    ? metadata.permissions as PermissionDefinitions
+    : {};
   return {
     clientId: row.clientId,
     name: metadata.name || row.clientId,
     public: metadata.public ?? row.secretHash === null,
+    disabled: metadata.disabled === true,
     hasSecret: row.secretHash !== null,
     redirectUris: metadata.redirectUris ?? [],
     scopes: metadata.scopes ?? [],
-    permissions: metadata.permissions ?? {},
+    permissions: definitions.length
+      ? Object.fromEntries(definitions.map((definition) => [definition.permission, definition.description]))
+      : legacyDefinitions,
     resources: row.resources ?? [],
     requireConsent: row.requireConsent,
     filterMode: row.filterMode ?? null,
@@ -428,6 +458,7 @@ export async function getClientDetail(db: Database, clientId: string): Promise<C
 export interface EditedClient {
   name: string;
   public: boolean;
+  disabled: boolean;
   newSecret: string | null | undefined;
   redirectUris: string[];
   scopes: string[];
@@ -447,6 +478,7 @@ export async function promptEditClient(
 ): Promise<EditedClient | null> {
   const name = await ask(rl, "Display name", current.name);
   const isPublic = await askYesNo(rl, "Public client (no secret)?", current.public);
+  const disabled = await askYesNo(rl, "Disable this client?", current.disabled);
 
   let newSecret: string | null | undefined;
   if (isPublic) {
@@ -496,19 +528,19 @@ export async function promptEditClient(
     organizationIds,
   });
 
-  printClientSummary(input);
+  printClientSummary({ ...input, disabled });
   process.stdout.write(
     `Secret: ${newSecret === undefined ? "kept" : newSecret === null ? "dropped" : "rotated (shown once after save)"}\n`,
   );
   if (!(await askYesNo(rl, "Save changes?", true))) return null;
-  return { ...input, name: input.name ?? current.clientId, newSecret, resourceScopes };
+  return { ...input, name: input.name ?? current.clientId, disabled, newSecret, resourceScopes };
 }
 
 export async function applyClientEdit(db: Database, clientId: string, edit: EditedClient): Promise<string | null> {
   const [row] = await db.select().from(oidcClients).where(eq(oidcClients.clientId, clientId)).limit(1);
   if (!row) throw new Error(`Client ${clientId} does not exist`);
-  const current = row.metadata as Partial<StoredClientMetadata>;
-  const metadata = {
+  const { permissions: _legacyPermissions, ...current } = row.metadata as Partial<StoredClientMetadata>;
+  const metadata: StoredClientMetadata = {
     ...current,
     name: edit.name,
     redirectUris: edit.redirectUris,
@@ -517,8 +549,9 @@ export async function applyClientEdit(db: Database, clientId: string, edit: Edit
     resourceScopes: Object.fromEntries(
       edit.resources.map((resource) => [resource, edit.resourceScopes.get(resource) ?? edit.scopes]),
     ),
-    permissions: edit.permissions,
-  };
+    ...(edit.disabled ? { disabled: true } : {}),
+  } as StoredClientMetadata;
+  if (!edit.disabled) delete metadata.disabled;
 
   let secretHash = row.secretHash;
   let rotatedSecret: string | null = null;
@@ -551,6 +584,7 @@ export async function applyClientEdit(db: Database, clientId: string, edit: Edit
       updatedAt: new Date(),
     })
     .where(eq(oidcClients.clientId, clientId));
+  await syncPermissionCatalog(db, clientId, edit.permissions);
   await db.delete(oidcClientOrganizations).where(eq(oidcClientOrganizations.clientId, clientId));
   await db.insert(oidcClientOrganizations).values(
     linkedOrganizations.map((organization) => ({ clientId, organizationId: organization.id })),

@@ -33,9 +33,12 @@ describe("createClientCache", () => {
     expect(first?.redirectUriSet.has("https://a/cb")).toBe(true);
   });
 
-  it("returns undefined when the loader finds no client", async () => {
-    const cache = createClientCache(async () => undefined, { ttlMs: 1000 });
+  it("does not cache a missing client", async () => {
+    const load = vi.fn(async () => undefined);
+    const cache = createClientCache(load, { ttlMs: 1000 });
     expect(await cache.get("missing")).toBeUndefined();
+    expect(await cache.get("missing")).toBeUndefined();
+    expect(load).toHaveBeenCalledTimes(2);
   });
 
   it("builds a filter-content set for O(1) membership", async () => {

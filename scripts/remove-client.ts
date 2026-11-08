@@ -1,5 +1,4 @@
 import "dotenv/config";
-import { z } from "zod";
 import { deleteClientById, requireDatabase, runRemoveFlow } from "./clients.js";
 
 const { db, pool } = requireDatabase();
@@ -9,7 +8,8 @@ try {
   if (!rawClientId) {
     await runRemoveFlow(db);
   } else {
-    const clientId = z.uuid().parse(rawClientId);
+    const clientId = rawClientId.trim();
+    if (!clientId) throw new Error("Client ID must not be empty");
     process.stdout.write(`${await deleteClientById(db, clientId)}\n`);
   }
 } finally {

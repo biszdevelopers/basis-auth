@@ -8,6 +8,23 @@ const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
 const INTERACTION_ATTEMPTS_KEY = "basis_interaction_attempts";
 const MAX_INTERACTION_RELOADS = 2;
 
+function parseBridgeError(raw: string): StatusError | undefined {
+  try {
+    const value = JSON.parse(atob(decodeURIComponent(raw))) as Partial<StatusError>;
+    if (
+      typeof value?.status === "number" &&
+      typeof value.error === "string" &&
+      typeof value.code === "number" &&
+      typeof value.error_description === "string"
+    ) {
+      return value as StatusError;
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
 function isPublicClientInformation(value: unknown): value is PublicClientInformation {
   if (!value || typeof value !== "object") return false;
   const client = value as Record<string, unknown>;
@@ -108,15 +125,14 @@ export function App() {
         ?.split("=")[1];
 
       if (raw) {
-
-        const error = JSON.parse(atob(decodeURIComponent(raw)));
-        await delay(300);
-        animate( "content", error)
-        console.log(error)
+        const error = parseBridgeError(raw);
         // clear it so it doesn't linger
         document.cookie = "basis_bridge_error=; path=/oauth; max-age=0";
-
-        return;
+        if (error) {
+          await delay(300);
+          animate("content", error);
+          return;
+        }
       }
 
 

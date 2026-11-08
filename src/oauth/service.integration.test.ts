@@ -38,6 +38,9 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
     config = await loadConfig({
       NODE_ENV: "test",
       DATABASE_URL: databaseUrl,
+      INTERNAL_API_TOKEN: "i".repeat(32),
+      MANAGEMENT_PORTAL_CLIENT_ID: "portal",
+      MANAGEMENT_PORTAL_AUDIENCE: "devconnect://noesis",
       OIDC_ISSUER: "https://auth.example.test",
       OIDC_COOKIE_KEYS: "a".repeat(32),
       OIDC_RESOURCES_JSON: JSON.stringify([
