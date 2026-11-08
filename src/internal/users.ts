@@ -256,7 +256,7 @@ export function createInternalUserService(db: Database, emailDomains: EmailDomai
     }
 
     const disabledAt = patch.disabled === true ? new Date() : undefined;
-    if (disabledAt) values.tokensValidAfter = disabledAt;
+    if (patch.disabled !== undefined) values.tokensValidAfter = disabledAt ?? null;
     let found = false;
     await db.transaction(async (transaction) => {
       const updated = await transaction
@@ -339,7 +339,7 @@ export function createInternalUserService(db: Database, emailDomains: EmailDomai
       values.pictureContentType = patch.picture?.contentType ?? null;
     }
     const disabledAt = patch.disabled === true ? new Date() : undefined;
-    if (disabledAt) values.tokensValidAfter = disabledAt;
+    if (patch.disabled !== undefined) values.tokensValidAfter = disabledAt ?? null;
 
     await db.transaction(async (tx) => {
       const updated = await tx.update(users).set(values).where(eq(users.id, userId)).returning({ id: users.id });
