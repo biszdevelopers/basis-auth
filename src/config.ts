@@ -30,8 +30,17 @@ export function isEphemeralLocalhostRedirectUri(value: string): boolean {
 }
 
 const redirectUriSchema = z.string().refine(
-  (value) => isEphemeralLocalhostRedirectUri(value) || z.url().safeParse(value).success,
-  "Redirect URI must be a valid URL or an ephemeral localhost URI such as http://localhost:*/auth/callback",
+  (value) => {
+    if (isEphemeralLocalhostRedirectUri(value)) return true;
+    try {
+      const url = new URL(value);
+      return (url.protocol === "http:" || url.protocol === "https:") &&
+        !url.username && !url.password;
+    } catch {
+      return false;
+    }
+  },
+  "Redirect URI must be an http or https URL or an ephemeral localhost URI such as http://localhost:*/auth/callback",
 );
 
 const clientBaseSchema = z.object({
