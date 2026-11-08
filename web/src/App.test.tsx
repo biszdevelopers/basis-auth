@@ -142,6 +142,33 @@ it("restarts a blocked authorization in place after logout", async () => {
   }
 });
 
+it("decodes a UTF-8 encoded bridge error", async () => {
+  const error = {
+    status: 403,
+    error: "access_denied",
+    code: 403,
+    error_description: "Access denied: 東京 café",
+  };
+  document.cookie = `basis_bridge_error=${encodeURIComponent(
+    Buffer.from(JSON.stringify(error), "utf8").toString("base64"),
+  )}`;
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  vi.stubGlobal("fetch", vi.fn(async () => ({
+    ok: true,
+    json: async () => ({ id: "client", name: "Example app", owners: [] }),
+  }) as Response));
+
+  try {
+    render(<App />);
+    await waitFor(() => expect(errorSpy).toHaveBeenCalledWith(
+      "Access denied: 東京 café (403)",
+    ));
+  } finally {
+    document.cookie = "basis_bridge_error=; max-age=0";
+    errorSpy.mockRestore();
+  }
+});
+
 it("shows a scrollable owner list and copies an owner email", async () => {
   const copy = vi.fn().mockResolvedValue(undefined);
   const clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, "clipboard");
