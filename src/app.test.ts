@@ -45,9 +45,11 @@ describe("health identity", () => {
     const body = await response.json();
 
     expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
     expect(body).toMatchObject({
       status: "ok",
       environment: "test",
+      pid: process.pid,
       database: { host: "db.example.test", port: 6543, database: "basis_auth" },
     });
     expect(typeof body.version).toBe("string");

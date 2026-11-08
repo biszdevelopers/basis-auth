@@ -22,7 +22,7 @@ const database = startupIdentity.database
   ? `${startupIdentity.database.host}:${startupIdentity.database.port}/${startupIdentity.database.database ?? "unknown"}`
   : "unknown";
 console.log(
-  `basis-auth ${startupIdentity.version} (${startupIdentity.commit ?? "commit unknown"}) database ${database} started ${startupIdentity.startedAt}`,
+  `basis-auth ${startupIdentity.version} (${startupIdentity.commit ?? "commit unknown"}) database ${database} pid ${startupIdentity.pid} started ${startupIdentity.startedAt}`,
 );
 await migrateDatabase(config.databaseUrl);
 const { db, pool } = createDatabase(config.databaseUrl);
@@ -49,14 +49,16 @@ const internalApp = createInternalApp(config.internalApiToken, internalUsers, {
 });
 
 const server = serve({ fetch: app.fetch, port: config.port }, () => {
-  console.log(`basis-auth listening on ${config.issuer}`);
+  console.log(`basis-auth listening on port ${config.port} for ${config.issuer} (pid ${process.pid})`);
   if (config.environment === "development") {
     console.log(`OIDC demo: ${config.issuer}/dev/demo`);
   }
 });
 const internalServer = serve(
   { fetch: internalApp.fetch, hostname: config.internalApiHost, port: config.internalApiPort },
-  () => console.log(`basis-auth internal API listening on http://${config.internalApiHost}:${config.internalApiPort}`),
+  () => console.log(
+    `basis-auth internal API listening on http://${config.internalApiHost}:${config.internalApiPort} (pid ${process.pid})`,
+  ),
 );
 
 async function shutdown(signal: string) {
