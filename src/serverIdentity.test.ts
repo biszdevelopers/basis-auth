@@ -33,6 +33,7 @@ describe("serverIdentity", () => {
     expect(Number.isNaN(Date.parse(identity.startedAt))).toBe(false);
     expect(identity.version).toMatch(/^\d+\.\d+\.\d+/);
     expect(identity.environment).toBe("test");
+    expect(identity.pid).toBe(process.pid);
     expect(identity.database).toEqual({ host: "localhost", port: 5432, database: "basis_auth" });
     expect(JSON.stringify(identity)).not.toContain("secret");
   });
