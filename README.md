@@ -28,6 +28,8 @@ Protocol endpoints:
 
 Access tokens are ten-minute RS256 JWTs with `typ=at+jwt`. Their `aud` identifies the resource API, while `client_id` identifies the requesting application. Resource APIs validate them locally with the published JWKS.
 
+`GET /health` reports the package version, optional commit, start time, environment, and the resolved database host, port, and name with credentials and query parameters removed.
+
 ## Local setup
 
 Requirements: Node.js 24, Bun, and PostgreSQL 14 or newer. Docker is not required.
@@ -102,9 +104,10 @@ Manage clients with the interactive TUI (numbered pickers, validated prompts, no
 bun run clients          # menu: list, add, remove, edit, register resource
 bun run clients:add      # add-client walkthrough
 bun run clients:remove   # pick a client from a numbered list
+bun run clients:doctor   # compare local state with a running server
 ```
 
-Adding walks through name, type (confidential/public), redirect URIs, resources, scopes, a JSON permission object mapping names to descriptions, consent, organizations, and optional account filters. For confidential clients, leave the secret blank to auto-generate a `sk-...` secret; it is printed once (PostgreSQL stores only a scrypt hash, so copy it then). Editing keeps the existing secret and owners unless you rotate or change the client type; a rotated secret is likewise shown once. Passing a JSON definition without `clientId` still works non-interactively and also auto-generates a missing secret:
+Adding walks through name, type (confidential/public), redirect URIs, resources, scopes, a JSON permission object mapping names to descriptions, consent, organizations, and optional account filters. For confidential clients, leave the secret blank to auto-generate a `sk-...` secret; it is printed once (PostgreSQL stores only a scrypt hash, so copy it then). Editing keeps the existing secret and owners unless you rotate or change the client type, updates the permission catalog, and can disable or re-enable the client; a rotated secret is likewise shown once. Passing a JSON definition without `clientId` still works non-interactively and also auto-generates a missing secret:
 
 ```bash
 bun run clients:add -- '{"name":"Example","redirectUris":["https://example.test/callback"],"public":false,"resources":["urn:basis:api:example"]}'
@@ -113,7 +116,16 @@ bun run clients:remove -- 3fa85f64-5717-4562-b3fc-2c963f66afa6
 
 Removing a client cascades to its authorization data. Remove a client from `OIDC_CLIENTS_JSON` before deleting it, otherwise the startup seed will create it again.
 
-TUI-managed clients and resources live in the database only (no `OIDC_*_JSON` edits, no restart): new resource audiences are registered on the spot, new clients authorize instantly, and edits apply within ~60s (client-cache TTL). The list flags any resource a client references that has no registry row with a `WARNING` — re-save that client via Edit to register it live.
+TUI-managed clients and resources live in the database only (no `OIDC_*_JSON` edits, no restart): new resource audiences are registered on the spot, new clients authorize instantly, and edits apply within ~60s (client-cache TTL). The TUI prints the resolved database host, port, and name before writing. Disabled clients return `14002`; missing clients return `14001`. The list flags any resource a client references that has no registry row with a `WARNING` — re-save that client via Edit to register it live.
+
+If a client exists in the database but a running server returns `14001`, compare the build and database that answered the request, then verify the live registry:
+
+```bash
+curl -s https://auth.example/health
+bun run clients:doctor <clientId> https://auth.example
+```
+
+`clients:doctor` prints the local client row, the server identity, and the live `/oauth/clients/:id` response. It warns when the local client was written after the server started, which usually means the server or reverse-proxy origin is stale.
 
 ## Downstream BFF integration
 
