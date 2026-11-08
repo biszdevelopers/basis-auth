@@ -32,6 +32,7 @@ export interface ServerIdentity {
   commit: string | null;
   startedAt: string;
   environment: string;
+  pid: number;
   database: DatabaseIdentity | null;
 }
 
@@ -57,6 +58,7 @@ export function serverIdentity(environment: string, databaseUrl?: string): Serve
     commit,
     startedAt,
     environment,
+    pid: process.pid,
     database: databaseIdentity(databaseUrl),
   };
 }
