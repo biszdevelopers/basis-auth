@@ -1,8 +1,30 @@
 import { describe, expect, it } from "vitest";
 import {
+  isAllowedProfilePictureUrl,
   microsoftAuthErrorPayload,
   userFacingMicrosoftAuthError,
 } from "./microsoft.js";
+
+describe("Microsoft profile picture URLs", () => {
+  it.each([
+    "https://graph.microsoft.com/v1.0/me/photo/$value",
+    "https://login.microsoftonline.com/common/photo",
+    "https://media.microsoft.com/photo.png",
+  ])("allows the Microsoft HTTPS host %s", (url) => {
+    expect(isAllowedProfilePictureUrl(url)).toBe(true);
+  });
+
+  it.each([
+    "http://graph.microsoft.com/v1.0/me/photo/$value",
+    "https://graph.microsoft.com.evil.example/photo",
+    "https://evil.example/photo",
+    "https://user:secret@graph.microsoft.com/photo",
+    "http://127.0.0.1/photo",
+    "http://169.254.169.254/latest/meta-data",
+  ])("rejects the unsafe URL %s", (url) => {
+    expect(isAllowedProfilePictureUrl(url)).toBe(false);
+  });
+});
 
 describe("Microsoft authentication errors", () => {
   it("extracts an AADSTS code from an authorization callback error", () => {

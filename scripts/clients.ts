@@ -192,8 +192,9 @@ async function promptRedirectUris(rl: Interface, initial: string, isPublic: bool
     const invalid = candidates.filter((uri) => {
       if (isEphemeralLocalhostRedirectUri(uri)) return false;
       try {
-        new URL(uri);
-        return false;
+        const url = new URL(uri);
+        return !(url.protocol === "http:" || url.protocol === "https:") ||
+          Boolean(url.username || url.password);
       } catch {
         return true;
       }

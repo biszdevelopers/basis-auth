@@ -109,6 +109,19 @@ describe("configuration", () => {
     expect(config.clients[0]?.redirectUris).toEqual([redirectUri]);
   });
 
+  it.each([
+    "javascript:alert(1)",
+    "data:text/html,<script>alert(1)</script>",
+    "file:///etc/passwd",
+    "https://user:secret@client.example.test/callback",
+  ])("rejects unsafe redirect URI %s", async (redirectUri) => {
+    const clients = JSON.parse(base.OIDC_CLIENTS_JSON);
+    clients[0].redirectUris = [redirectUri];
+    await expect(
+      loadConfig({ ...base, OIDC_CLIENTS_JSON: JSON.stringify(clients) }),
+    ).rejects.toThrow();
+  });
+
   it("rejects ephemeral localhost redirects for confidential client inputs", () => {
     expect(() => clientInputSchema.parse({
       clientSecret: "a-sufficiently-long-secret",
@@ -229,6 +242,12 @@ describe("configuration", () => {
     await expect(
       loadConfig({ ...base, OIDC_COOKIE_KEYS: "changeme-changeme-changeme-changeme" }),
     ).rejects.toThrow("must be replaced with real randomly generated values");
+  });
+
+  it("rejects placeholder internal API tokens", async () => {
+    await expect(
+      loadConfig({ ...base, INTERNAL_API_TOKEN: "replace-with-at-least-32-random-characters" }),
+    ).rejects.toThrow("INTERNAL_API_TOKEN must be replaced");
   });
 
   it("rejects development mode with a non-localhost issuer", async () => {

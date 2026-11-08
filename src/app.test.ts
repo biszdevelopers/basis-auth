@@ -796,6 +796,32 @@ describe("authorization interactions", () => {
     });
   });
 
+  it("encodes non-Latin1 error text in the bridge cookie", async () => {
+    const description = "This account is not allowed: 東京 café";
+    const oauth = {
+      startAuthorization: vi.fn().mockRejectedValue(
+        new OAuthError("access_denied", description, 403),
+      ),
+    } as unknown as OAuthService;
+    const authorizationApp = createApp(
+      config,
+      oauth,
+      { publicJwks: { keys: [] } } as unknown as KeyService,
+      { find: vi.fn().mockResolvedValue(undefined) } as unknown as SessionService,
+      {} as IdentityService,
+      {} as MicrosoftService,
+    );
+
+    const response = await authorizationApp.request("/oauth/authorize?client_id=client");
+
+    expect(response.status).toBe(200);
+    const errorCookie = response.headers.get("set-cookie")?.match(/basis_bridge_error=([^;]+)/)?.[1];
+    const decoded = JSON.parse(
+      Buffer.from(decodeURIComponent(errorCookie!), "base64").toString("utf8"),
+    );
+    expect(decoded).toMatchObject({ error: "access_denied", error_description: description });
+  });
+
   it("redirects back to authorize after Microsoft login", async () => {
     const oauth = {
       interaction: vi.fn().mockResolvedValue({

@@ -164,6 +164,8 @@ export function createApp(
       return undefined;
     }
   };
+  const encodeErrorPayload = (payload: unknown) =>
+    Buffer.from(JSON.stringify(payload), "utf8").toString("base64");
   const errorPayload = (error: unknown) =>
     error instanceof OAuthError
       ? error.toJSON()
@@ -186,7 +188,7 @@ export function createApp(
   const frontendFlowError = async (c: Context, error: unknown) => {
     if (!(error instanceof OAuthError)) log.error(error, "Frontend flow error");
     const redirectTo = await originalAuthorizationUri(c);
-    setCookie(c, ERROR_COOKIE, btoa(JSON.stringify(errorPayload(error))), {
+    setCookie(c, ERROR_COOKIE, encodeErrorPayload(errorPayload(error)), {
       ...cookieOptions,
       httpOnly: false,
       path: "/oauth",
@@ -450,7 +452,7 @@ export function createApp(
       });
     } catch (error) {
       if (!(error instanceof OAuthError)) log.error(error, "Authorization request failed");
-      setCookie(c, ERROR_COOKIE, btoa(JSON.stringify(errorPayload(error))), {
+      setCookie(c, ERROR_COOKIE, encodeErrorPayload(errorPayload(error)), {
         ...cookieOptions,
         httpOnly: false,
         path: "/oauth",

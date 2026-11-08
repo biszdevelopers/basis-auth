@@ -75,7 +75,13 @@ function generatedSecret() {
 
 function validRedirectUri(value: string, isPublic: boolean) {
   if (isEphemeralLocalhostRedirectUri(value)) return isPublic;
-  try { new URL(value); return true; } catch { return false; }
+  try {
+    const url = new URL(value);
+    return (url.protocol === "http:" || url.protocol === "https:") &&
+      !url.username && !url.password;
+  } catch {
+    return false;
+  }
 }
 
 export function createInternalApplicationService(db: Database, issuer: string, invalidateClient: (clientId: string) => void) {

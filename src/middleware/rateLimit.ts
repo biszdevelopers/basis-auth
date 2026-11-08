@@ -1,3 +1,4 @@
+import { getConnInfo } from "@hono/node-server/conninfo";
 import type { Context, MiddlewareHandler } from "hono";
 import { LRUCache } from "lru-cache";
 
@@ -66,9 +67,35 @@ export function rateLimit(
   };
 }
 
-export function clientIp(c: Context): string {
-  const forwarded = c.req.header("x-forwarded-for");
-  if (forwarded && forwarded.trim()) return forwarded.split(",")[0]!.trim();
-  const real = c.req.header("x-real-ip");
-  return (real && real.trim()) || "unknown";
+function isTrustedProxy(address: string | undefined): boolean {
+  if (!address) return false;
+  const value = address.replace(/^\[|\]$/g, "").toLowerCase();
+  if (value === "::1" || value === "::ffff:127.0.0.1" || value.startsWith("127.")) return true;
+  if (value.startsWith("10.") || value.startsWith("192.168.")) return true;
+  const private172 = /^172\.(\d{1,3})\./.exec(value);
+  if (private172) {
+    const octet = Number(private172[1]);
+    if (octet >= 16 && octet <= 31) return true;
+  }
+  return value.startsWith("fc") ||
+    value.startsWith("fd") ||
+    value.startsWith("fe80:");
+}
+
+export function clientIp(c: Context, remoteAddress?: string): string {
+  let remote = remoteAddress;
+  if (remote === undefined) {
+    try {
+      remote = getConnInfo(c).remote.address;
+    } catch {
+      remote = undefined;
+    }
+  }
+  if (isTrustedProxy(remote)) {
+    const forwarded = c.req.header("x-forwarded-for");
+    if (forwarded && forwarded.trim()) return forwarded.split(",")[0]!.trim();
+    const real = c.req.header("x-real-ip");
+    if (real && real.trim()) return real.trim();
+  }
+  return remote || "unknown";
 }

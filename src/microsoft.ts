@@ -8,9 +8,50 @@ import type { IdentityService } from "./identity.js";
 import { OAuthError } from "./oauth/errors.js";
 
 const MICROSOFT_SCOPE = "openid profile email User.Read";
+const MAX_PICTURE_BYTES = 5 * 1024 * 1024;
+const MAX_PICTURE_REDIRECTS = 3;
+const MICROSOFT_PICTURE_HOSTS = [
+  "microsoft.com",
+  "microsoftonline.com",
+  "microsoftonline.us",
+];
+
+export function isAllowedProfilePictureUrl(value: string | URL): boolean {
+  try {
+    const url = typeof value === "string" ? new URL(value) : value;
+    if (url.protocol !== "https:" || url.username || url.password) return false;
+    const host = url.hostname.toLowerCase();
+    return MICROSOFT_PICTURE_HOSTS.some(
+      (suffix) => host === suffix || host.endsWith(`.${suffix}`),
+    );
+  } catch {
+    return false;
+  }
+}
 
 function defaultProfilePicture(issuer: string, subject: string) {
   return { data: toPng(`${issuer}:${subject}`, 512), contentType: "image/png" };
+}
+
+async function fetchProfilePicture(
+  url: URL,
+  accessToken: string,
+  redirects = 0,
+): Promise<Response> {
+  if (!isAllowedProfilePictureUrl(url)) throw new Error("Profile picture host is not allowed");
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+    redirect: "manual",
+    signal: AbortSignal.timeout(5_000),
+  });
+  if (response.status >= 300 && response.status < 400) {
+    const location = response.headers.get("location");
+    if (!location || redirects >= MAX_PICTURE_REDIRECTS) {
+      throw new Error("Profile picture redirect is not allowed");
+    }
+    return fetchProfilePicture(new URL(location, url), accessToken, redirects + 1);
+  }
+  return response;
 }
 
 async function profilePicture(
@@ -22,12 +63,14 @@ async function profilePicture(
   if (typeof pictureUrl !== "string") return defaultProfilePicture(issuer, subject);
 
   try {
-    const response = await fetch(pictureUrl, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
+    const response = await fetchProfilePicture(new URL(pictureUrl), accessToken);
     const contentType = response.headers.get("content-type");
     if (!response.ok || !contentType?.startsWith("image/")) throw new Error("Profile picture unavailable");
-    return { data: Buffer.from(await response.arrayBuffer()), contentType };
+    const length = Number(response.headers.get("content-length") ?? 0);
+    if (Number.isFinite(length) && length > MAX_PICTURE_BYTES) throw new Error("Profile picture is too large");
+    const data = Buffer.from(await response.arrayBuffer());
+    if (data.length > MAX_PICTURE_BYTES) throw new Error("Profile picture is too large");
+    return { data, contentType };
   } catch {
     return defaultProfilePicture(issuer, subject);
   }
