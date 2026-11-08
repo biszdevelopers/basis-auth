@@ -1,7 +1,7 @@
 import { promisify } from "node:util";
 import { randomBytes, scrypt as scryptCallback, timingSafeEqual } from "node:crypto";
 import { and, eq, inArray, notInArray, sql } from "drizzle-orm";
-import type { ClientSeed, ResourceSeed } from "../config.js";
+import type { ClientSeed, PermissionDefinitions, ResourceSeed } from "../config.js";
 import type { Database } from "./client.js";
 import { defaultPermissions, oidcClientOrganizations, oidcClients, oidcPermissions, organizations, resourceServers } from "./schema.js";
 
@@ -35,6 +35,47 @@ export interface StoredClientMetadata extends Record<string, unknown> {
   public: boolean;
   scopes: string[];
   resourceScopes?: Record<string, string[]>;
+  disabled?: boolean;
+}
+
+export async function syncPermissionCatalog(
+  db: Database,
+  clientId: string,
+  definitions: PermissionDefinitions,
+): Promise<void> {
+  const existingDefinitions = await db
+    .select({ permission: oidcPermissions.permission, description: oidcPermissions.description })
+    .from(oidcPermissions)
+    .where(eq(oidcPermissions.clientId, clientId));
+  const oldDefinitions = new Map(existingDefinitions.map((item) => [item.permission, item.description]));
+  const nextDefinitions = Object.entries(definitions);
+  const changed = oldDefinitions.size !== nextDefinitions.length || nextDefinitions.some(
+    ([permission, description]) => oldDefinitions.get(permission) !== description,
+  );
+  if (!changed) return;
+
+  await db.transaction(async (tx) => {
+    const nextPermissions = nextDefinitions.map(([permission]) => permission);
+    if (nextPermissions.length) {
+      await tx.delete(oidcPermissions).where(and(
+        eq(oidcPermissions.clientId, clientId),
+        notInArray(oidcPermissions.permission, nextPermissions),
+      ));
+    } else {
+      await tx.delete(oidcPermissions).where(eq(oidcPermissions.clientId, clientId));
+    }
+    for (const [permission, description] of nextDefinitions) {
+      await tx.insert(oidcPermissions).values({ clientId, permission, description })
+        .onConflictDoUpdate({
+          target: [oidcPermissions.clientId, oidcPermissions.permission],
+          set: { description },
+        });
+    }
+    await tx.update(oidcClients).set({
+      permissionCatalogVersion: sql`${oidcClients.permissionCatalogVersion} + 1`,
+      updatedAt: new Date(),
+    }).where(eq(oidcClients.clientId, clientId));
+  });
 }
 
 export async function seedConfiguration(
@@ -62,6 +103,12 @@ export async function seedConfiguration(
       const missing = client.organizationIds.filter((organizationId) => !found.has(organizationId));
       throw new Error(`Client ${client.clientId} references unknown organization(s): ${missing.join(", ")}`);
     }
+    const [existing] = await db
+      .select({ secretHash: oidcClients.secretHash, metadata: oidcClients.metadata })
+      .from(oidcClients)
+      .where(eq(oidcClients.clientId, client.clientId))
+      .limit(1);
+    const existingMetadata = existing?.metadata as Partial<StoredClientMetadata> | undefined;
     const metadata: StoredClientMetadata = {
       name: client.name ?? client.clientId,
       owners: [{ id: defaultClientOwnerId, role: "role.ADMIN" }],
@@ -71,12 +118,8 @@ export async function seedConfiguration(
       resourceScopes: client.resourceScopes ?? Object.fromEntries(
         client.resources.map((resource) => [resource, client.scopes]),
       ),
+      ...(existingMetadata?.disabled === true ? { disabled: true } : {}),
     };
-    const [existing] = await db
-      .select({ secretHash: oidcClients.secretHash })
-      .from(oidcClients)
-      .where(eq(oidcClients.clientId, client.clientId))
-      .limit(1);
     const secretHash = client.clientSecret
       ? (await secretMatches(client.clientSecret, existing?.secretHash ?? null))
         ? existing!.secretHash
@@ -106,39 +149,7 @@ export async function seedConfiguration(
           updatedAt: new Date(),
         },
       });
-    const existingDefinitions = await db
-      .select({ permission: oidcPermissions.permission, description: oidcPermissions.description })
-      .from(oidcPermissions)
-      .where(eq(oidcPermissions.clientId, client.clientId));
-    const oldDefinitions = new Map(existingDefinitions.map((item) => [item.permission, item.description]));
-    const nextDefinitions = Object.entries(client.permissions);
-    const changed = oldDefinitions.size !== nextDefinitions.length || nextDefinitions.some(
-      ([permission, description]) => oldDefinitions.get(permission) !== description,
-    );
-    if (changed) {
-      await db.transaction(async (tx) => {
-        const nextPermissions = nextDefinitions.map(([permission]) => permission);
-        if (nextPermissions.length) {
-          await tx.delete(oidcPermissions).where(and(
-            eq(oidcPermissions.clientId, client.clientId),
-            notInArray(oidcPermissions.permission, nextPermissions),
-          ));
-        } else {
-          await tx.delete(oidcPermissions).where(eq(oidcPermissions.clientId, client.clientId));
-        }
-        for (const [permission, description] of nextDefinitions) {
-          await tx.insert(oidcPermissions).values({ clientId: client.clientId, permission, description })
-            .onConflictDoUpdate({
-              target: [oidcPermissions.clientId, oidcPermissions.permission],
-              set: { description },
-            });
-        }
-        await tx.update(oidcClients).set({
-          permissionCatalogVersion: sql`${oidcClients.permissionCatalogVersion} + 1`,
-          updatedAt: new Date(),
-        }).where(eq(oidcClients.clientId, client.clientId));
-      });
-    }
+    await syncPermissionCatalog(db, client.clientId, client.permissions);
     const storedDefaults = await db.select({ permission: defaultPermissions.permission })
       .from(defaultPermissions).where(eq(defaultPermissions.applicationId, client.clientId));
     const currentDefaults = new Set(storedDefaults.map(({ permission }) => permission));
