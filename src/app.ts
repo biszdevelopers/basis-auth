@@ -254,10 +254,13 @@ export function createApp(
     c.header("Cross-Origin-Resource-Policy", "same-site");
   });
   app.use("*", secureHeaders());
-  app.get("/health", (c) => c.json({
-    status: "ok",
-    ...serverIdentity(config.environment, config.databaseUrl),
-  }));
+  app.get("/health", (c) => {
+    c.header("Cache-Control", "no-store");
+    return c.json({
+      status: "ok",
+      ...serverIdentity(config.environment, config.databaseUrl),
+    });
+  });
 
   app.get("/", async (c) => {
     if (config.environment === "development") {
