@@ -78,15 +78,22 @@ describe("clientIp", () => {
     return { req: { header: (name: string) => headers[name] ?? null } } as unknown as Parameters<typeof clientIp>[0];
   }
 
-  it("prefers the first X-Forwarded-For address", () => {
-    expect(clientIp(ctxWith({ "x-forwarded-for": "1.2.3.4, 5.6.7.8" }))).toBe("1.2.3.4");
+  it("prefers the first X-Forwarded-For address from a trusted proxy", () => {
+    expect(clientIp(ctxWith({ "x-forwarded-for": "1.2.3.4, 5.6.7.8" }), "127.0.0.1")).toBe("1.2.3.4");
   });
 
-  it("falls back to X-Real-IP", () => {
-    expect(clientIp(ctxWith({ "x-real-ip": "9.9.9.9" }))).toBe("9.9.9.9");
+  it("falls back to X-Real-IP from a trusted proxy", () => {
+    expect(clientIp(ctxWith({ "x-real-ip": "9.9.9.9" }), "10.0.0.2")).toBe("9.9.9.9");
   });
 
-  it("falls back to unknown when no header is present", () => {
+  it("ignores forwarded headers from an untrusted client", () => {
+    expect(clientIp(
+      ctxWith({ "x-forwarded-for": "1.2.3.4", "x-real-ip": "5.6.7.8" }),
+      "203.0.113.5",
+    )).toBe("203.0.113.5");
+  });
+
+  it("falls back to unknown when no address is available", () => {
     expect(clientIp(ctxWith({}))).toBe("unknown");
   });
 });
@@ -173,14 +180,21 @@ describe("clientIp — doubled battery", () => {
   }
 
   it("trims whitespace from the forwarded address", () => {
-    expect(clientIp(ctxWith({ "x-forwarded-for": "  10.0.0.1 , 10.0.0.2" }))).toBe("10.0.0.1");
+    expect(clientIp(ctxWith({ "x-forwarded-for": "  10.0.0.1 , 10.0.0.2" }), "127.0.0.1")).toBe("10.0.0.1");
   });
 
   it("prefers X-Forwarded-For over X-Real-IP", () => {
-    expect(clientIp(ctxWith({ "x-forwarded-for": "1.1.1.1", "x-real-ip": "2.2.2.2" }))).toBe("1.1.1.1");
+    expect(clientIp(
+      ctxWith({ "x-forwarded-for": "1.1.1.1", "x-real-ip": "2.2.2.2" }),
+      "::1",
+    )).toBe("1.1.1.1");
   });
 
-  it("returns unknown when both headers are absent", () => {
-    expect(clientIp(ctxWith({ "x-real-ip": "" }))).toBe("unknown");
+  it("uses the trusted proxy address when both headers are absent", () => {
+    expect(clientIp(ctxWith({ "x-real-ip": "" }), "127.0.0.1")).toBe("127.0.0.1");
+  });
+
+  it("treats private IPv6 addresses as trusted proxies", () => {
+    expect(clientIp(ctxWith({ "x-forwarded-for": "1.1.1.1" }), "fd00::1")).toBe("1.1.1.1");
   });
 });
