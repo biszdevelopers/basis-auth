@@ -231,6 +231,12 @@ describe("configuration", () => {
     ).rejects.toThrow("must be replaced with real randomly generated values");
   });
 
+  it("rejects placeholder internal API tokens", async () => {
+    await expect(
+      loadConfig({ ...base, INTERNAL_API_TOKEN: "replace-with-at-least-32-random-characters" }),
+    ).rejects.toThrow("INTERNAL_API_TOKEN must be replaced");
+  });
+
   it("rejects development mode with a non-localhost issuer", async () => {
     await expect(
       loadConfig({ ...base, NODE_ENV: "development", OIDC_ISSUER: "https://auth.example.test" }),
