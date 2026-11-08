@@ -26,6 +26,7 @@ import {
 import { clientIp, rateLimit, RateLimiter } from "./middleware/rateLimit.js";
 import { log } from "./log.js";
 import { pkceChallenge, randomToken } from "./oauth/crypto.js";
+import { serverIdentity } from "./serverIdentity.js";
 
 const SSO_COOKIE = "basis_sso";
 const INTERACTION_COOKIE = "basis_bridge_id";
@@ -163,14 +164,14 @@ export function createApp(
       return undefined;
     }
   };
-  const errorPayload = (error: any) =>
+  const errorPayload = (error: unknown) =>
     error instanceof OAuthError
       ? error.toJSON()
       : {
           status: 500,
           error: "server_error",
           code: 50040,
-          error_description: "The request could not be completed: " + error,
+          error_description: "The request could not be completed",
         };
   const originalAuthorizationUri = async (c: Context) => {
     try {
@@ -182,8 +183,8 @@ export function createApp(
       return "/oauth/authorize";
     }
   };
-  const frontendFlowError = async (c: Context, error: any) => {
-    console.error(error)
+  const frontendFlowError = async (c: Context, error: unknown) => {
+    if (!(error instanceof OAuthError)) log.error(error, "Frontend flow error");
     const redirectTo = await originalAuthorizationUri(c);
     setCookie(c, ERROR_COOKIE, btoa(JSON.stringify(errorPayload(error))), {
       ...cookieOptions,
@@ -253,7 +254,10 @@ export function createApp(
     c.header("Cross-Origin-Resource-Policy", "same-site");
   });
   app.use("*", secureHeaders());
-  app.get("/health", (c) => c.json({ status: "ok" }));
+  app.get("/health", (c) => c.json({
+    status: "ok",
+    ...serverIdentity(config.environment, config.databaseUrl),
+  }));
 
   app.get("/", async (c) => {
     if (config.environment === "development") {
@@ -442,7 +446,7 @@ export function createApp(
         session: sso ? { userId: sso.userId, authenticatedAt: sso.authenticatedAt } : undefined,
       });
     } catch (error) {
-      console.error(error)
+      if (!(error instanceof OAuthError)) log.error(error, "Authorization request failed");
       setCookie(c, ERROR_COOKIE, btoa(JSON.stringify(errorPayload(error))), {
         ...cookieOptions,
         httpOnly: false,
@@ -507,15 +511,12 @@ export function createApp(
         return c.json({ redirectTo });
       }
       return c.redirect(redirectTo, 302);
-    } catch (error: any) {
-      console.log(error)
-      log.error(error, "Microsoft upstream begin failed");
-      
+    } catch (error) {
       if (error instanceof OAuthError) {
         return frontendFlowError(c, error);
-      } else {
-        return frontendFlowError(c, "Upstream Error");
       }
+      log.error(error, "Microsoft upstream begin failed");
+      return frontendFlowError(c, error);
     }
   });
 
