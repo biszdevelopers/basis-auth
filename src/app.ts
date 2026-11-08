@@ -540,7 +540,7 @@ export function createApp(
       setCookie(c, SSO_COOKIE, sessionToken, { ...cookieOptions, maxAge: 30 * 24 * 60 * 60 });
       await oauth.attachUser(result.authorizationRequestId, result.user.id, new Date());
       return c.redirect(request.initialUri, 303);
-    } catch (error: any) {
+    } catch (error) {
       const payload = microsoftAuthErrorPayload(error);
       const code = resolveAuthErrorCode(payload);
       const description = userFacingMicrosoftAuthError(payload)
@@ -642,10 +642,10 @@ export function createApp(
   });
 
   app.onError((error, c) => {
-    log.error(error, "Request failed");
     if (error instanceof OAuthError) {
       return c.json(error.toJSON(), error.status as 400);
     }
+    log.error(error, "Request failed");
     const accept = c.req.header("accept") ?? "";
     if (accept.includes("text/html")) {
       return c.html(
