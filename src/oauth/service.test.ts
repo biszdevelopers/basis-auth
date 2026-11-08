@@ -160,6 +160,26 @@ describe("client lookup", () => {
     });
   });
 
+  it("sees a client inserted after the server started", async () => {
+    const delayed = vi.fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([clientRow]);
+    const delayedDb = {
+      select: () => ({ from: (table: unknown) => table === oidcClientOrganizations
+        ? organizationQuery()
+        : ({ where: () => ({ limit: () => ({ prepare: () => ({ execute: delayed }) }) }) }) }),
+    } as unknown as Parameters<typeof createOAuthService>[1];
+    const delayedService = createOAuthService(config, delayedDb, {} as KeyService, { findUsersByIds } as unknown as IdentityService);
+
+    await expect(delayedService.getClientInformation("client-1")).rejects.toMatchObject({
+      code: 14001,
+    });
+    await expect(delayedService.getClientInformation("client-1")).resolves.toMatchObject({
+      id: "client-1",
+    });
+    expect(delayed).toHaveBeenCalledTimes(2);
+  });
+
   it("reports a disabled client distinctly from a missing one", async () => {
     const disabledRow = {
       ...clientRow,
