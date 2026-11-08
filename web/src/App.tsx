@@ -10,7 +10,9 @@ const MAX_INTERACTION_RELOADS = 2;
 
 function parseBridgeError(raw: string): StatusError | undefined {
   try {
-    const value = JSON.parse(atob(decodeURIComponent(raw))) as Partial<StatusError>;
+    const binary = atob(decodeURIComponent(raw));
+    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    const value = JSON.parse(new TextDecoder().decode(bytes)) as Partial<StatusError>;
     if (
       typeof value?.status === "number" &&
       typeof value.error === "string" &&
