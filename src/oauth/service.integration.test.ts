@@ -8,6 +8,7 @@ import { createEmailDomainService } from "../database/emailDomains.js";
 import {
   defaultPermissions,
   emailDomainSuffixes,
+  oidcClientOrganizations,
   oidcClients,
   oidcPermissions,
   organizations,
@@ -19,6 +20,7 @@ import { createIdentityService, type IdentityService } from "../identity.js";
 import { createInternalApplicationService } from "../internal/applications.js";
 import { createKeyService, type KeyService } from "./keys.js";
 import { createOAuthService, type OAuthService } from "./service.js";
+import { applyClientEdit, getClientDetail, listClients } from "../../scripts/clients.js";
 
 const runIntegration =
   process.env.RUN_POSTGRES_TESTS === "1" && Boolean(process.env.DATABASE_URL);
@@ -321,5 +323,67 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
         clientSecret: "portal-secret-long-enough",
       }),
     ).rejects.toMatchObject({ error: "invalid_grant" });
+  });
+
+  it("moves client configuration and authorization state to a new client ID", async () => {
+    const current = await getClientDetail(db, "other-app");
+    const nextClientId = `renamed-${crypto.randomUUID()}`;
+    const [user] = await db.select({ id: users.id }).from(users).limit(1);
+    expect(user).toBeDefined();
+
+    await db.insert(userPermissions).values({
+      userId: user!.id,
+      applicationId: "other-app",
+      permission: "other.Application.read",
+    }).onConflictDoNothing();
+    await db.insert(userApplications).values({
+      userId: user!.id,
+      applicationId: "other-app",
+    }).onConflictDoNothing();
+
+    await applyClientEdit(db, "other-app", {
+      ...current,
+      clientId: nextClientId,
+      newSecret: undefined,
+      resourceScopes: new Map(current.resources.map((resource) => [resource, current.scopes])),
+    });
+
+    await expect(
+      db.select().from(oidcClients).where(eq(oidcClients.clientId, "other-app")),
+    ).resolves.toEqual([]);
+    await expect(getClientDetail(db, nextClientId)).resolves.toMatchObject({
+      clientId: nextClientId,
+      name: current.name,
+      public: current.public,
+      redirectUris: current.redirectUris,
+      resources: current.resources,
+      organizationIds: current.organizationIds,
+    });
+    await expect(
+      db.select().from(oidcPermissions).where(eq(oidcPermissions.clientId, nextClientId)),
+    ).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ permission: "other.Application.read" }),
+    ]));
+    await expect(
+      db.select().from(defaultPermissions).where(eq(defaultPermissions.applicationId, nextClientId)),
+    ).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ permission: "other.Application.read" }),
+    ]));
+    await expect(
+      db.select().from(userPermissions).where(eq(userPermissions.applicationId, nextClientId)),
+    ).resolves.toEqual(expect.arrayContaining([expect.objectContaining({ userId: user!.id })]));
+    await expect(
+      db.select().from(userApplications).where(eq(userApplications.applicationId, nextClientId)),
+    ).resolves.toEqual(expect.arrayContaining([expect.objectContaining({ userId: user!.id })]));
+    await expect(
+      db.select().from(oidcClientOrganizations).where(eq(oidcClientOrganizations.clientId, nextClientId)),
+    ).resolves.toHaveLength(1);
+
+    const listed = await listClients(db);
+    expect(listed.some((client) => client.clientId === "other-app")).toBe(false);
+    expect(listed.find((client) => client.clientId === nextClientId)).toMatchObject({
+      hasSecret: true,
+      updatedAt: expect.any(String),
+    });
   });
 });

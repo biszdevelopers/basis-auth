@@ -19,7 +19,20 @@ import {
   type ClientOwner,
   type StoredClientMetadata,
 } from "../src/database/seed.js";
-import { oidcClientOrganizations, oidcClients, oidcPermissions, organizations, resourceServers } from "../src/database/schema.js";
+import {
+  authorizationCodes,
+  authorizationConsents,
+  authorizationRequests,
+  defaultPermissions,
+  oidcClientOrganizations,
+  oidcClients,
+  oidcPermissions,
+  organizations,
+  refreshTokens,
+  resourceServers,
+  userApplications,
+  userPermissions,
+} from "../src/database/schema.js";
 import { databaseIdentity } from "../src/serverIdentity.js";
 
 // ponytail: stdlib readline TUI; no prompt dependency.
@@ -76,45 +89,12 @@ async function askYesNo(rl: Interface, question: string, defaultYes: boolean): P
   return answer.startsWith("y");
 }
 
-export interface ListedClient {
-  clientId: string;
-  name: string;
-  public: boolean;
-  disabled: boolean;
-  redirectUris: string[];
-  resources: string[];
-  permissionDefinitionCount: number;
-  organizationIds: string[];
-}
+export type ListedClient = ClientDetail;
 
 export async function listClients(db: Database): Promise<ListedClient[]> {
-  const rows = await db.select().from(oidcClients);
-  const links = await db
-    .select({ clientId: oidcClientOrganizations.clientId, organizationId: organizations.organizationId })
-    .from(oidcClientOrganizations)
-    .innerJoin(organizations, eq(oidcClientOrganizations.organizationId, organizations.id));
-  const definitions = await db
-    .select({ clientId: oidcPermissions.clientId, permission: oidcPermissions.permission })
-    .from(oidcPermissions);
-  return rows
-    .map((row) => {
-      const metadata = row.metadata as Partial<StoredClientMetadata>;
-      return {
-        clientId: row.clientId,
-        name: metadata.name || row.clientId,
-        public: metadata.public ?? row.secretHash === null,
-        disabled: metadata.disabled === true,
-        redirectUris: metadata.redirectUris ?? [],
-        resources: row.resources ?? [],
-        permissionDefinitionCount: definitions.filter(
-          (definition) => definition.clientId === row.clientId,
-        ).length,
-        organizationIds: links
-          .filter((link) => link.clientId === row.clientId)
-          .map((link) => link.organizationId),
-      };
-    })
-    .sort((a, b) => a.name.localeCompare(b.name));
+  const rows = await db.select({ clientId: oidcClients.clientId }).from(oidcClients);
+  const clients = await Promise.all(rows.map(({ clientId }) => getClientDetail(db, clientId)));
+  return clients.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export async function deleteClientById(db: Database, clientId: string): Promise<string> {
@@ -135,10 +115,23 @@ export function printClients(clients: ListedClient[], known: Set<string>): void 
     process.stdout.write(
       `${index + 1}) ${client.name} (${client.clientId})${client.public ? " [public]" : ""}${client.disabled ? " [disabled]" : ""}\n`,
     );
-    if (client.redirectUris.length) process.stdout.write(`   redirects: ${client.redirectUris.join(", ")}\n`);
-    if (client.resources.length) process.stdout.write(`   resources: ${client.resources.join(", ")}\n`);
-    process.stdout.write(`   permission definitions: ${client.permissionDefinitionCount}\n`);
-    process.stdout.write(`   organizations: ${client.organizationIds.join(", ")}\n`);
+    process.stdout.write(`   secret: ${client.hasSecret ? "set (hash only)" : "none"}\n`);
+    process.stdout.write(`   redirects: ${client.redirectUris.join(", ") || "(none)"}\n`);
+    process.stdout.write(`   resources: ${client.resources.join(", ") || "(none)"}\n`);
+    process.stdout.write(`   scopes: ${client.scopes.join(", ") || "(none)"}\n`);
+    const permissions = Object.entries(client.permissions);
+    process.stdout.write(
+      `   permission definitions: ${permissions.length ? permissions.map(([permission, description]) => `${permission} (${description})`).join(", ") : "(none)"}\n`,
+    );
+    process.stdout.write(`   consent: ${client.requireConsent ? "shown" : "skipped"}\n`);
+    process.stdout.write(
+      `   filter: ${client.filterMode ?? "none"}${client.filterContent.length ? ` (${client.filterContent.join(", ")})` : ""}\n`,
+    );
+    process.stdout.write(`   organizations: ${client.organizationIds.join(", ") || "(none)"}\n`);
+    process.stdout.write(
+      `   owners: ${client.owners.map((owner) => `${owner.id} (${owner.role})`).join(", ") || "(none)"}\n`,
+    );
+    process.stdout.write(`   updated: ${client.updatedAt}\n`);
     const missing = client.resources.filter((audience) => !known.has(audience));
     if (missing.length) {
       process.stdout.write(
@@ -260,6 +253,7 @@ async function promptMissingResourceScopes(
 }
 
 function printClientSummary(input: {
+  clientId?: string;
   name?: string;
   public: boolean;
   disabled?: boolean;
@@ -273,7 +267,7 @@ function printClientSummary(input: {
   organizationIds: string[];
 }): void {
   process.stdout.write(
-    `\nName: ${input.name ?? "(none)"}\nType: ${input.public ? "public" : "confidential"}\n` +
+    `${input.clientId ? `\nClient ID: ${input.clientId}\n` : "\n"}Name: ${input.name ?? "(none)"}\nType: ${input.public ? "public" : "confidential"}\n` +
       `Disabled: ${input.disabled ? "yes" : "no"}\n` +
       `Redirects: ${input.redirectUris.join(", ")}\nResources: ${input.resources.join(", ")}\n` +
       `Scopes: ${input.scopes.join(", ")}\nConsent: ${input.requireConsent ? "shown" : "skipped"}\n` +
@@ -418,6 +412,7 @@ export interface ClientDetail {
   filterContent: string[];
   owners: ClientOwner[];
   organizationIds: string[];
+  updatedAt: string;
 }
 
 export async function getClientDetail(db: Database, clientId: string): Promise<ClientDetail> {
@@ -453,10 +448,12 @@ export async function getClientDetail(db: Database, clientId: string): Promise<C
       .innerJoin(organizations, eq(oidcClientOrganizations.organizationId, organizations.id))
       .where(eq(oidcClientOrganizations.clientId, clientId)))
       .map((organization) => organization.organizationId),
+    updatedAt: row.updatedAt.toISOString(),
   };
 }
 
 export interface EditedClient {
+  clientId: string;
   name: string;
   public: boolean;
   disabled: boolean;
@@ -478,6 +475,13 @@ export async function promptEditClient(
   audiences: string[],
 ): Promise<EditedClient | null> {
   const name = await ask(rl, "Display name", current.name);
+  const requestedClientId = await ask(
+    rl,
+    'Client ID (blank = keep, "new" = generate a UUID)',
+    current.clientId,
+  );
+  const clientId = requestedClientId === "new" ? crypto.randomUUID() : requestedClientId;
+  if (!clientId.trim()) throw new Error("Client ID must not be empty");
   const isPublic = await askYesNo(rl, "Public client (no secret)?", current.public);
   const disabled = await askYesNo(rl, "Disable this client?", current.disabled);
 
@@ -529,17 +533,27 @@ export async function promptEditClient(
     organizationIds,
   });
 
-  printClientSummary({ ...input, disabled });
+  printClientSummary({ ...input, clientId, disabled });
   process.stdout.write(
     `Secret: ${newSecret === undefined ? "kept" : newSecret === null ? "dropped" : "rotated (shown once after save)"}\n`,
   );
   if (!(await askYesNo(rl, "Save changes?", true))) return null;
-  return { ...input, name: input.name ?? current.clientId, disabled, newSecret, resourceScopes };
+  return { ...input, clientId, name: input.name ?? current.clientId, disabled, newSecret, resourceScopes };
 }
 
 export async function applyClientEdit(db: Database, clientId: string, edit: EditedClient): Promise<string | null> {
   const [row] = await db.select().from(oidcClients).where(eq(oidcClients.clientId, clientId)).limit(1);
   if (!row) throw new Error(`Client ${clientId} does not exist`);
+  const targetClientId = edit.clientId;
+  if (!targetClientId.trim()) throw new Error("Client ID must not be empty");
+  if (targetClientId !== clientId) {
+    const [existing] = await db
+      .select({ clientId: oidcClients.clientId })
+      .from(oidcClients)
+      .where(eq(oidcClients.clientId, targetClientId))
+      .limit(1);
+    if (existing) throw new Error(`Client ${targetClientId} already exists`);
+  }
   const { permissions: _legacyPermissions, ...current } = row.metadata as Partial<StoredClientMetadata>;
   const metadata: StoredClientMetadata = {
     ...current,
@@ -573,9 +587,8 @@ export async function applyClientEdit(db: Database, clientId: string, edit: Edit
   if (linkedOrganizations.length !== edit.organizationIds.length) {
     throw new Error("One or more organizations do not exist");
   }
-  await db
-    .update(oidcClients)
-    .set({
+  await db.transaction(async (tx) => {
+    const values = {
       metadata,
       secretHash,
       resources: edit.resources,
@@ -583,13 +596,39 @@ export async function applyClientEdit(db: Database, clientId: string, edit: Edit
       filterMode: edit.filterMode,
       filterContent: edit.filterContent,
       updatedAt: new Date(),
-    })
-    .where(eq(oidcClients.clientId, clientId));
-  await syncPermissionCatalog(db, clientId, edit.permissions);
-  await db.delete(oidcClientOrganizations).where(eq(oidcClientOrganizations.clientId, clientId));
-  await db.insert(oidcClientOrganizations).values(
-    linkedOrganizations.map((organization) => ({ clientId, organizationId: organization.id })),
-  );
+    };
+    if (targetClientId === clientId) {
+      await tx.update(oidcClients).set(values).where(eq(oidcClients.clientId, clientId));
+    } else {
+      await tx.insert(oidcClients).values({
+        clientId: targetClientId,
+        ...values,
+        permissionCatalogVersion: row.permissionCatalogVersion,
+      });
+      const catalog = await tx
+        .select({ permission: oidcPermissions.permission, description: oidcPermissions.description })
+        .from(oidcPermissions)
+        .where(eq(oidcPermissions.clientId, clientId));
+      if (catalog.length) {
+        await tx.insert(oidcPermissions).values(
+          catalog.map((definition) => ({ clientId: targetClientId, ...definition })),
+        );
+      }
+      await tx.update(defaultPermissions).set({ applicationId: targetClientId }).where(eq(defaultPermissions.applicationId, clientId));
+      await tx.update(userPermissions).set({ applicationId: targetClientId }).where(eq(userPermissions.applicationId, clientId));
+      await tx.update(userApplications).set({ applicationId: targetClientId }).where(eq(userApplications.applicationId, clientId));
+      await tx.update(authorizationRequests).set({ clientId: targetClientId }).where(eq(authorizationRequests.clientId, clientId));
+      await tx.update(authorizationCodes).set({ clientId: targetClientId }).where(eq(authorizationCodes.clientId, clientId));
+      await tx.update(refreshTokens).set({ clientId: targetClientId }).where(eq(refreshTokens.clientId, clientId));
+      await tx.update(authorizationConsents).set({ clientId: targetClientId }).where(eq(authorizationConsents.clientId, clientId));
+      await tx.delete(oidcClients).where(eq(oidcClients.clientId, clientId));
+    }
+    await tx.delete(oidcClientOrganizations).where(eq(oidcClientOrganizations.clientId, targetClientId));
+    await tx.insert(oidcClientOrganizations).values(
+      linkedOrganizations.map((organization) => ({ clientId: targetClientId, organizationId: organization.id })),
+    );
+  });
+  await syncPermissionCatalog(db, targetClientId, edit.permissions);
   return rotatedSecret;
 }
 
@@ -607,7 +646,15 @@ export async function runEditFlow(db: Database): Promise<void> {
       return;
     }
     const rotatedSecret = await applyClientEdit(db, selected.clientId, edited);
-    process.stdout.write(`Updated client ${selected.clientId} (applies within ~60s, no restart needed)\n`);
+    process.stdout.write(
+      `Updated client ${edited.clientId}${edited.clientId !== selected.clientId ? ` (was ${selected.clientId})` : ""} ` +
+        "(applies within ~60s, no restart needed)\n",
+    );
+    if (edited.clientId !== selected.clientId) {
+      process.stdout.write(
+        `Client ID changed. Update downstream client configurations, and remove the old ID from OIDC_CLIENTS_JSON or the startup seed will recreate it.\n`,
+      );
+    }
     const registered = edited.resources.filter((audience) => !known.has(audience));
     if (registered.length) {
       process.stdout.write(`Registered new resource(s) live, no restart needed: ${registered.join(", ")}\n`);
