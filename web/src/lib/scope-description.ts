@@ -10,7 +10,7 @@ const knownScopes: Record<string, Omit<ScopeDescription, "scope">> = {
   email: { description: "Access your email address", sensitive: false },
   offline_access: {
     description: "Maintain access while offline",
-    sensitive: true,
+    sensitive: false,
   },
 };
 
