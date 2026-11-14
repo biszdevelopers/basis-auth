@@ -27,7 +27,7 @@ describe("configuration", () => {
   it("normalizes the issuer and validates client resources", async () => {
     const config = await loadConfig(base);
     expect(config.issuer).toBe("https://auth.example.test");
-    expect(config.accessTokenLifetimeSeconds).toBe(600);
+    expect(config.accessTokenLifetimeSeconds).toBe(3600);
     expect(config.clients[0]?.clientId).toBe("test-client");
     expect(config.clients[0]?.organizationIds).toEqual(["cbc6e1e2-a6bb-4002-bbdc-6da892a051a7"]);
     expect(config.jwks.keys[0]?.d).toBeTypeOf("string");

@@ -177,6 +177,7 @@ export const resourceServers = pgTable("resource_servers", {
   audience: text("audience").primaryKey(),
   name: text("name").notNull(),
   scopes: jsonb("scopes").notNull().$type<string[]>(),
+  backchannelLogoutUri: text("backchannel_logout_uri"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

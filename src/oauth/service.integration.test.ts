@@ -12,6 +12,7 @@ import {
   oidcClients,
   oidcPermissions,
   organizations,
+  resourceServers,
   userApplications,
   userPermissions,
   users,
@@ -91,6 +92,18 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
 
   afterAll(async () => {
     await close?.();
+  });
+
+  it("persists, preserves, and clears a configured resource logout callback", async () => {
+    const resource = { audience: "urn:basis:api:logout-test", scopes: [] };
+    const uri = "https://projects.example.test/logout";
+    const loadResource = () => db.select().from(resourceServers).where(eq(resourceServers.audience, resource.audience));
+
+    await seedConfiguration(db, [], [{ ...resource, backchannelLogoutUri: uri }]);
+    await seedConfiguration(db, [], [resource]);
+    await expect(loadResource()).resolves.toEqual([expect.objectContaining({ backchannelLogoutUri: uri })]);
+    await seedConfiguration(db, [], [{ ...resource, backchannelLogoutUri: null }]);
+    await expect(loadResource()).resolves.toEqual([expect.objectContaining({ backchannelLogoutUri: null })]);
   });
 
   it("stores permission definitions separately from client metadata", async () => {

@@ -87,12 +87,17 @@ export async function seedConfiguration(
   resources: ResourceSeed[],
 ): Promise<void> {
   for (const resource of resources) {
+    const settings = {
+      name: resource.name ?? resource.audience,
+      scopes: resource.scopes,
+      backchannelLogoutUri: resource.backchannelLogoutUri,
+    };
     await db
       .insert(resourceServers)
-      .values({ audience: resource.audience, name: resource.name ?? resource.audience, scopes: resource.scopes })
+      .values({ audience: resource.audience, ...settings })
       .onConflictDoUpdate({
         target: resourceServers.audience,
-        set: { name: resource.name ?? resource.audience, scopes: resource.scopes, updatedAt: new Date() },
+        set: { ...settings, updatedAt: new Date() },
       });
   }
 

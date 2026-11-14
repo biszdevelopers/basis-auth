@@ -132,6 +132,18 @@ export async function createKeyService(config: AppConfig, identity: IdentityServ
       .sign(signingKey);
   }
 
+  async function issueLogoutToken(userId: string, audience: string) {
+    return new SignJWT({ events: { "http://schemas.openid.net/event/backchannel-logout": {} } })
+      .setProtectedHeader({ alg: "RS256", kid: activeJwk.kid, typ: "logout+jwt" })
+      .setIssuer(config.issuer)
+      .setSubject(userId)
+      .setAudience(audience)
+      .setJti(crypto.randomUUID())
+      .setIssuedAt()
+      .setExpirationTime("2m")
+      .sign(signingKey);
+  }
+
   async function verifyAccessToken(token: string, audience?: string) {
     const { payload } = await jwtVerify(token, verifier, {
       algorithms: ["RS256"],
@@ -158,7 +170,7 @@ export async function createKeyService(config: AppConfig, identity: IdentityServ
     return claims;
   }
 
-  return { publicJwks, issueAccessToken, issueApplicationAccessToken, issueIdToken, verifyAccessToken };
+  return { publicJwks, issueAccessToken, issueApplicationAccessToken, issueIdToken, issueLogoutToken, verifyAccessToken };
 }
 
 export type KeyService = Awaited<ReturnType<typeof createKeyService>>;

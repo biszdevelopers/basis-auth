@@ -63,6 +63,8 @@ Production must set `NODE_ENV=production`, an HTTPS `OIDC_ISSUER`, persistent pr
 
 `OIDC_RESOURCES_JSON` declares API audiences, display names, and the scopes each API accepts. A client claims one or more resources, and `OIDC_CLIENTS_JSON` declares its allowed scopes per resource through `resourceScopes` (the legacy flat `scopes` list remains a fallback). The standard `openid`, `profile`, `email`, and `offline_access` scopes are public to every registered client and do not need to be listed in either configuration.
 
+A resource can optionally set `backchannelLogoutUri` in `OIDC_RESOURCES_JSON` to an HTTPS callback. Set it to `null` to clear a stored callback. Access tokens default to 60 minutes, configurable with `ACCESS_TOKEN_LIFETIME_MS`.
+
 For basishacks, register the dedicated resource audience `devconnect://nethack.bisz.dev` and the application scope `nethack.access`; the client explicitly requests it with `openid profile email offline_access`. Each client owns its permission definitions in the `permissions` object and may list explicitly defined defaults in `defaultPermissions`. User grants are scoped to the client that issued them, and a human access token contains only that application's grants. Defaults are copied to a user once, on their first successful login to that application. Additions to the default list do not change grants for users who have already logged in. The complete JSON example is in `.env.example`.
 
 An exact grant such as `nethack.Projects.read` covers that permission. A stored
@@ -163,6 +165,8 @@ Other platforms should implement the same contract with their standard OAuth res
 Resource APIs that require immediate per-user revocation must also load the token subject's `disabled` and `tokens_valid_after` state after signature validation. Reject disabled subjects and tokens whose `iat` is at or before that barrier. The example middleware exposes `loadTokenSubject` for this check while keeping JWT and revocation validation local to the resource API.
 
 `basis-api` uses the private `/internal/users/:userId` endpoints for identity state and profile pictures. The same listener exposes `/internal/management/users/:userId` for user and permission administration, plus `/internal/applications` management endpoints. Every request requires `Authorization: Bearer <INTERNAL_API_TOKEN>`; management requests additionally require the signed end-user access token in `X-Basis-Actor-Token: Bearer ...`. Basis Auth verifies its audience, portal client ID, user grant type, required scope, and delegated permissions before each operation. Configure those checks with `MANAGEMENT_PORTAL_CLIENT_ID`, `MANAGEMENT_PORTAL_AUDIENCE`, and `MANAGEMENT_PORTAL_SCOPE`. The listener is configured by `INTERNAL_API_HOST` and `INTERNAL_API_PORT`, bound to `127.0.0.1:3001` by default; keep it off the public network.
+
+`POST /internal/users/:userId/logout` takes a JSON body such as `{"audience":"urn:basis:api:projects"}` and requests logout of the user's sessions at that resource. Basis Auth sends a form-encoded `logout_token` signed with its OIDC key and bound to the resource audience. The resource handles session termination after validating the token. The internal API returns `204` on delivery, `404` for an unknown user or resource, `409` when the resource has no callback, or `502` if delivery fails.
 
 ## Development commands
 

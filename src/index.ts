@@ -9,6 +9,7 @@ import { seedConfiguration } from "./database/seed.js";
 import { createIdentityService } from "./identity.js";
 import { createMicrosoftService } from "./microsoft.js";
 import { createKeyService } from "./oauth/keys.js";
+import { createLogoutService } from "./oauth/logout.js";
 import { createOAuthService } from "./oauth/service.js";
 import { createSessionService } from "./oauth/sessions.js";
 import { createInternalUserService } from "./internal/users.js";
@@ -46,7 +47,7 @@ const internalApp = createInternalApp(config.internalApiToken, internalUsers, {
   clientId: config.managementPortalClientId,
   audience: config.managementPortalAudience,
   scope: config.managementPortalScope,
-});
+}, createLogoutService(db, keys));
 
 const server = serve({ fetch: app.fetch, port: config.port }, () => {
   console.log(`basis-auth listening on port ${config.port} for ${config.issuer} (pid ${process.pid})`);

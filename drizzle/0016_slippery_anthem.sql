@@ -1,0 +1,1 @@
+ALTER TABLE "resource_servers" ADD COLUMN "backchannel_logout_uri" text;

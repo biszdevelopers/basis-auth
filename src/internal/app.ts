@@ -4,6 +4,7 @@ import { Hono, type Context } from "hono";
 import { secureHeaders } from "hono/secure-headers";
 import { z } from "zod";
 import type { KeyService } from "../oauth/keys.js";
+import type { createLogoutService } from "../oauth/logout.js";
 import {
   InternalApplicationError,
   type ApplicationActor,
@@ -19,7 +20,12 @@ type ManagementOptions = {
   scope: string;
 };
 
-export function createInternalApp(token: string, users: InternalUserService, management?: ManagementOptions) {
+export function createInternalApp(
+  token: string,
+  users: InternalUserService,
+  management?: ManagementOptions,
+  executeLogout?: ReturnType<typeof createLogoutService>,
+) {
   const app = new Hono();
   app.use("*", secureHeaders());
   app.use("*", async (c, next) => {
@@ -76,6 +82,31 @@ export function createInternalApp(token: string, users: InternalUserService, man
       throw error;
     }
   });
+
+  if (executeLogout) {
+    const logoutRequestSchema = z.object({ audience: z.string().min(1) });
+    app.post("/internal/users/:userId/logout", async (c) => {
+      const request = logoutRequestSchema.safeParse(await c.req.json<unknown>().catch(() => null));
+      if (!request.success) return c.json({ error: "invalid_request", message: "A resource audience is required" }, 400);
+      let user;
+      try {
+        user = await users.findUser(c.req.param("userId"));
+      } catch (error) {
+        if (error instanceof InternalUserError) {
+          return c.json({ error: error.code, message: error.message }, error.status);
+        }
+        throw error;
+      }
+      if (!user) return c.json({ error: "user_not_found" }, 404);
+      const result = await executeLogout(user.id, request.data.audience);
+      switch (result) {
+        case "unknown_resource": return c.json({ error: result }, 404);
+        case "logout_not_configured": return c.json({ error: result }, 409);
+        case "logout_delivery_failed": return c.json({ error: result }, 502);
+        case "delivered": return c.body(null, 204);
+      }
+    });
+  }
 
   async function actor(c: Context): Promise<ApplicationActor> {
     if (!management) throw new InternalApplicationError(404, "not_found", "Application management is unavailable");

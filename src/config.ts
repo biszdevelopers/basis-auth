@@ -112,10 +112,16 @@ export const clientInputSchema = clientBaseSchema
   .omit({ clientId: true })
   .superRefine(validateEphemeralRedirectUris);
 
+export const backchannelLogoutUriSchema = z.url({ protocol: /^https$/ }).refine((value) => {
+  const url = new URL(value);
+  return !url.username && !url.password && !url.href.includes("#");
+}, "Back-channel logout URI must be an HTTPS URL without credentials or a fragment");
+
 export const resourceSchema = z.object({
   audience: z.string().min(1),
   name: z.string().trim().min(1).optional(),
   scopes: z.array(z.string().min(1)).default([]),
+  backchannelLogoutUri: backchannelLogoutUriSchema.nullable().optional(),
 });
 
 const bootstrapGrantSchema = z.object({
@@ -139,7 +145,7 @@ const environmentSchema = z.object({
   MANAGEMENT_PORTAL_CLIENT_ID: z.string().min(1),
   MANAGEMENT_PORTAL_AUDIENCE: z.string().min(1),
   MANAGEMENT_PORTAL_SCOPE: z.string().min(1).default("noesis.access"),
-  ACCESS_TOKEN_LIFETIME_MS: z.coerce.number().int().positive().multipleOf(1000).default(10 * 60 * 1000),
+  ACCESS_TOKEN_LIFETIME_MS: z.coerce.number().int().positive().multipleOf(1000).default(60 * 60 * 1000),
   OIDC_ISSUER: z.url().transform((issuer) => issuer.replace(/\/$/, "")),
   OIDC_COOKIE_KEYS: z.string().min(32),
   OIDC_JWKS_JSON: z.string().optional(),
