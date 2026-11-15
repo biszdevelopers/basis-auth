@@ -1,4 +1,4 @@
-import { beforeAll, afterAll, describe, expect, it } from "vitest";
+import { beforeAll, afterAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { loadConfig, type AppConfig } from "../config.js";
 import { createDatabase, type Database } from "../database/client.js";
@@ -19,7 +19,9 @@ import {
 } from "../database/schema.js";
 import { createIdentityService, type IdentityService } from "../identity.js";
 import { createInternalApplicationService } from "../internal/applications.js";
+import { portalScopedDefaults } from "../internal/portal-permissions.js";
 import { createKeyService, type KeyService } from "./keys.js";
+import { createLogoutService } from "./logout.js";
 import { createOAuthService, type OAuthService } from "./service.js";
 import { applyClientEdit, getClientDetail, listClients } from "../../scripts/clients.js";
 
@@ -83,7 +85,7 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
     const database = createDatabase(databaseUrl);
     db = database.db;
     close = () => database.pool.end();
-    await seedConfiguration(db, config.clients, config.resources);
+    await seedConfiguration(db, config.clients, config.resources, { clientId: config.managementPortalClientId });
     emailDomains = createEmailDomainService(db);
     identity = createIdentityService(db, emailDomains, []);
     keys = await createKeyService(config, identity);
@@ -104,6 +106,89 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
     await expect(loadResource()).resolves.toEqual([expect.objectContaining({ backchannelLogoutUri: uri })]);
     await seedConfiguration(db, [], [{ ...resource, backchannelLogoutUri: null }]);
     await expect(loadResource()).resolves.toEqual([expect.objectContaining({ backchannelLogoutUri: null })]);
+  });
+
+  it("checks resource ownership, active scope assignments, and the stored logout destination", async () => {
+    const ownerId = crypto.randomUUID();
+    const otherId = crypto.randomUUID();
+    const ids = [ownerId, otherId];
+    await db.insert(users).values(ids.map((id) => ({
+      id, provider: "resource-integration", upstreamIssuer: "test", upstreamSubject: id, email: `${id}@example.test`,
+    })));
+    const applications = createInternalApplicationService(db, config.issuer, oauth.invalidateClient);
+    const owner = {
+      id: ownerId,
+      permissions: [
+        "BiszPortal.Applications.create",
+        "BiszPortal.Applications.read.me",
+        "BiszPortal.Applications.delete.me",
+        "BiszPortal.ApplicationResources.manage",
+        "BiszPortal.Resources.read.me",
+        "BiszPortal.Resources.update.me",
+        "BiszPortal.Resources.delete.me",
+      ],
+    };
+    const settings = {
+      name: "Resource test application",
+      public: true,
+      redirectUris: ["https://example.test/callback"],
+      organizationIds: ["cbc6e1e2-a6bb-4002-bbdc-6da892a051a7"],
+      requireConsent: false,
+      filterMode: null,
+      filterContent: [],
+    };
+    const { clientId } = await applications.createApplication(owner, settings);
+    const resourceId = `urn:basis:api:${clientId}`;
+    const othersOnly = {
+      id: otherId,
+      permissions: ["BiszPortal.Applications.read.others", "BiszPortal.Resources.read.others"],
+    };
+    const ownResource = { id: ownerId, permissions: othersOnly.permissions };
+    const resourceWildcard = { id: otherId, permissions: ["BiszPortal.Resources.all"] };
+    const logoutUri = "https://resource.example.test/logout";
+
+    try {
+      await expect(applications.list(othersOnly)).resolves.toContainEqual(expect.objectContaining({ clientId }));
+      await expect(applications.detail(clientId, ownResource)).rejects.toMatchObject({ status: 404 });
+      await expect(applications.detail(clientId, othersOnly)).resolves.toMatchObject({ role: null });
+      await expect(applications.resourceDetail(resourceId, ownResource)).rejects.toMatchObject({ status: 404 });
+      await expect(applications.listResources(owner)).resolves.toEqual([{ name: `${settings.name} API`, resourceId }]);
+      await expect(applications.resourceDetail(resourceId, othersOnly)).resolves.toMatchObject({
+        capabilities: { update: false, delete: false },
+      });
+      await expect(applications.setResourceLogoutUri(resourceId, othersOnly, logoutUri))
+        .rejects.toMatchObject({ status: 403 });
+      await expect(applications.listResources({ id: ownerId, permissions: [] })).rejects.toMatchObject({ status: 403 });
+
+      await applications.updateResourceScope(resourceId, owner, { action: "add", scope: "test.read" });
+      await applications.updateResourceScope(resourceId, owner, { action: "add", scope: "test.all" });
+      await applications.updateScopes(clientId, owner, { [resourceId]: ["test.read"] });
+      await expect(applications.updateResourceScope(resourceId, owner, { action: "remove", scope: "test.read" }))
+        .rejects.toMatchObject({ status: 409, code: "scope_in_use" });
+      await expect(applications.deleteResource(resourceId, owner)).rejects.toMatchObject({ status: 409, code: "resource_in_use" });
+      await applications.updateScopes(clientId, owner, { [resourceId]: [] });
+      await expect(applications.updateResourceScope(resourceId, owner, { action: "remove", scope: "test.read" }))
+        .resolves.toMatchObject({ availableScopes: ["test.all"] });
+
+      await applications.setResourceLogoutUri(resourceId, owner, "https://resource.example.test/old-logout");
+      await applications.setResourceLogoutUri(resourceId, resourceWildcard, logoutUri);
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(null, { status: 204 }));
+      vi.stubGlobal("fetch", fetch);
+      const logout = createLogoutService(db, { issueLogoutToken: vi.fn().mockResolvedValue("signed-token") });
+      await expect(logout(ownerId, resourceId)).resolves.toBe("delivered");
+      expect(fetch).toHaveBeenCalledWith(logoutUri, expect.objectContaining({ method: "POST" }));
+      await applications.setResourceLogoutUri(resourceId, owner, null);
+      await expect(logout(ownerId, resourceId)).resolves.toBe("logout_not_configured");
+
+      await applications.deleteApplication(clientId, owner);
+      await applications.deleteResource(resourceId, owner);
+      await expect(applications.resourceDetail(resourceId, owner)).rejects.toMatchObject({ status: 404 });
+    } finally {
+      vi.unstubAllGlobals();
+      await db.delete(oidcClients).where(eq(oidcClients.clientId, clientId));
+      await db.delete(resourceServers).where(eq(resourceServers.audience, resourceId));
+      for (const id of ids) await db.delete(users).where(eq(users.id, id));
+    }
   });
 
   it("stores permission definitions separately from client metadata", async () => {
@@ -139,7 +224,7 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
     );
     const actor = {
       id: "c6ba1588-03bb-4c61-a4e1-3c7c82e919b5",
-      permissions: ["BiszPortal.ApplicationPermissions.manage"],
+      permissions: ["BiszPortal.ApplicationPermissions.manage", "BiszPortal.Applications.read.me"],
     };
     const selected = ["nethack.Projects.read", "integration.live-default"];
 
@@ -159,7 +244,7 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
       applications.updateDefaultPermissions("portal", actor, ["nethack.Projects.read", "nethack.Projects.read"]),
     ).rejects.toMatchObject({ status: 400, code: "invalid_default_permissions" });
 
-    await applications.updateDefaultPermissions("portal", actor, ["nethack.Projects.read"]);
+    await applications.updateDefaultPermissions("portal", actor, ["nethack.Projects.read", ...portalScopedDefaults]);
   });
 
   it("seeds domains and clears user links when a suffix is deleted", async () => {
@@ -203,7 +288,7 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
       provider: "basischina-microsoft",
       issuer: "https://login.microsoftonline.com/tenant/v2.0",
       subject: "microsoft-subject",
-      email: "user@example.edu",
+      email: "user@basis-global.com",
       displayName: "Example User",
     });
     const verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
@@ -230,11 +315,12 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
       codeVerifier: verifier,
     });
     const access = await keys.verifyAccessToken(String(tokens.access_token));
+    const expectedPortalPermissions = ["nethack.Projects.read", ...portalScopedDefaults].sort();
     expect(access).toMatchObject({
       sub: user.id,
       aud: "urn:basis:api:projects",
       client_id: "portal",
-      permissions: ["nethack.Projects.read"],
+      permissions: expectedPortalPermissions,
       gty: "authorization_code",
     });
     const defaultRows = await db.select().from(userPermissions).where(eq(userPermissions.userId, user.id));
@@ -269,7 +355,7 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
     });
     await expect(keys.verifyAccessToken(String(repeated.access_token))).resolves.toMatchObject({
       client_id: "portal",
-      permissions: ["nethack.Projects.read"],
+      permissions: expectedPortalPermissions,
     });
 
     const otherLogin = await oauth.startAuthorization({
@@ -317,7 +403,7 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
       sub: user.id,
       client_id: "portal",
       gty: "refresh_token",
-      permissions: ["nethack.Projects.read"],
+      permissions: expectedPortalPermissions,
     });
     await db
       .delete(defaultPermissions)

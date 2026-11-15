@@ -27,7 +27,10 @@ console.log(
 );
 await migrateDatabase(config.databaseUrl);
 const { db, pool } = createDatabase(config.databaseUrl);
-await seedConfiguration(db, config.clients, config.resources);
+await seedConfiguration(db, config.clients, config.resources, {
+  clientId: config.managementPortalClientId,
+  resourceRootUserId: process.env.BASIS_RESOURCE_ROOT_USER_ID || undefined,
+});
 const emailDomains = createEmailDomainService(db);
 const identity = createIdentityService(
   db,

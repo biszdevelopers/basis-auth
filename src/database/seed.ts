@@ -3,7 +3,8 @@ import { randomBytes, scrypt as scryptCallback, timingSafeEqual } from "node:cry
 import { and, eq, inArray, notInArray, sql } from "drizzle-orm";
 import type { ClientSeed, PermissionDefinitions, ResourceSeed } from "../config.js";
 import type { Database } from "./client.js";
-import { defaultPermissions, oidcClientOrganizations, oidcClients, oidcPermissions, organizations, resourceServers } from "./schema.js";
+import { defaultPermissions, oidcClientOrganizations, oidcClients, oidcPermissions, organizations, resourceServers, users } from "./schema.js";
+import { portalScopedDefaults, portalScopedDefinitions, retiredPortalPermissions } from "../internal/portal-permissions.js";
 
 const scrypt = promisify(scryptCallback);
 const defaultClientOwnerId = "c6ba1588-03bb-4c61-a4e1-3c7c82e919b5";
@@ -85,7 +86,11 @@ export async function seedConfiguration(
   db: Database,
   clients: ClientSeed[],
   resources: ResourceSeed[],
+  portal?: { clientId: string; resourceRootUserId?: string },
 ): Promise<void> {
+  const [root] = portal?.resourceRootUserId
+    ? await db.select({ id: users.id }).from(users).where(eq(users.id, portal.resourceRootUserId)).limit(1)
+    : [];
   for (const resource of resources) {
     const settings = {
       name: resource.name ?? resource.audience,
@@ -94,7 +99,7 @@ export async function seedConfiguration(
     };
     await db
       .insert(resourceServers)
-      .values({ audience: resource.audience, ...settings })
+      .values({ audience: resource.audience, createdBy: root?.id, ...settings })
       .onConflictDoUpdate({
         target: resourceServers.audience,
         set: { ...settings, updatedAt: new Date() },
@@ -119,7 +124,7 @@ export async function seedConfiguration(
     const existingMetadata = existing?.metadata as Partial<StoredClientMetadata> | undefined;
     const metadata: StoredClientMetadata = {
       name: client.name ?? client.clientId,
-      owners: [{ id: defaultClientOwnerId, role: "role.ADMIN" }],
+      owners: existingMetadata?.owners ?? [{ id: root?.id ?? defaultClientOwnerId, role: "role.ADMIN" }],
       redirectUris: client.redirectUris,
       public: client.public,
       scopes: client.scopes,
@@ -157,19 +162,33 @@ export async function seedConfiguration(
           updatedAt: new Date(),
         },
       });
-    await syncPermissionCatalog(db, client.clientId, client.permissions);
+    const isPortal = client.clientId === portal?.clientId;
+    const definitions = isPortal
+      ? {
+          ...Object.fromEntries(Object.entries(client.permissions)
+            .filter(([permission]) => !retiredPortalPermissions.has(permission.toLowerCase()))),
+          ...portalScopedDefinitions,
+        }
+      : client.permissions;
+    const defaults = isPortal
+      ? [...new Set([
+          ...client.defaultPermissions.filter((permission) => !retiredPortalPermissions.has(permission.toLowerCase())),
+          ...portalScopedDefaults,
+        ])]
+      : client.defaultPermissions;
+    await syncPermissionCatalog(db, client.clientId, definitions);
     const storedDefaults = await db.select({ permission: defaultPermissions.permission })
       .from(defaultPermissions).where(eq(defaultPermissions.applicationId, client.clientId));
     const currentDefaults = new Set(storedDefaults.map(({ permission }) => permission));
-    const nextDefaults = new Set(client.defaultPermissions);
+    const nextDefaults = new Set(defaults);
     if (
       currentDefaults.size !== nextDefaults.size ||
       [...nextDefaults].some((permission) => !currentDefaults.has(permission))
     ) {
       await db.transaction(async (tx) => {
         await tx.delete(defaultPermissions).where(eq(defaultPermissions.applicationId, client.clientId));
-        if (client.defaultPermissions.length) {
-          await tx.insert(defaultPermissions).values(client.defaultPermissions.map((permission) => ({
+        if (defaults.length) {
+          await tx.insert(defaultPermissions).values(defaults.map((permission) => ({
             applicationId: client.clientId,
             permission,
           })));

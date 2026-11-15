@@ -140,7 +140,7 @@ describe("internal application HTTP API", () => {
       sub: user.id,
       client_id: "portal-client",
       scope: "openid noesis.access",
-      permissions: ["BiszPortal.Applications.read"],
+      permissions: ["BiszPortal.Applications.read.me"],
       gty: "authorization_code",
     });
     const response = await managementApp(applications, verify).request("/internal/applications", {
@@ -148,7 +148,7 @@ describe("internal application HTTP API", () => {
     });
     expect(response.status).toBe(200);
     expect(verify).toHaveBeenCalledWith("actor", "devconnect://noesis");
-    expect(applications.list).toHaveBeenCalledWith({ id: user.id, permissions: ["BiszPortal.Applications.read"] });
+    expect(applications.list).toHaveBeenCalledWith({ id: user.id, permissions: ["BiszPortal.Applications.read.me"] });
   });
 
   it.each([
@@ -169,7 +169,7 @@ describe("internal application HTTP API", () => {
     const createApplication = vi.fn().mockResolvedValue({ clientId: "new-client", clientSecret: null });
     const detail = vi.fn().mockResolvedValue({ clientId: "new-client" });
     const applications = { createApplication, detail } as unknown as InternalApplicationService;
-    const permissions = ["BiszPortal.Applications.create", "BiszPortal.Applications.read"];
+    const permissions = ["BiszPortal.Applications.create", "BiszPortal.Applications.read.me"];
     const verify = vi.fn().mockResolvedValue({ sub: user.id, client_id: "portal-client", scope: "noesis.access", permissions, gty: "authorization_code" });
     const response = await managementApp(applications, verify).request("/internal/applications", {
       method: "POST",
@@ -268,4 +268,57 @@ describe("internal application HTTP API", () => {
     expect(response.status).toBe(400);
     expect(updateDefaultPermissions).not.toHaveBeenCalled();
   });
+});
+
+describe("internal resource HTTP API", () => {
+  const permissions = ["BiszPortal.Resources.all"];
+  const resourceId = "https://projects.example.test/api/a%2Fb";
+  const path = `/internal/resources/${encodeURIComponent(resourceId)}/backchannel/logout`;
+  const headers = {
+    authorization: `Bearer ${token}`,
+    "x-basis-actor-token": "Bearer actor",
+    "content-type": "application/json",
+  };
+
+  it("reads, saves, and clears the webhook using an encoded resource audience", async () => {
+    const backchannelLogoutUri = "https://projects.example.test/logout";
+    const resourceDetail = vi.fn().mockResolvedValue({ backchannelLogoutUri: null });
+    const setResourceLogoutUri = vi.fn()
+      .mockResolvedValueOnce({ backchannelLogoutUri })
+      .mockResolvedValueOnce({ backchannelLogoutUri: null });
+    const app = managementApp(
+      { resourceDetail, setResourceLogoutUri } as unknown as InternalApplicationService,
+      vi.fn().mockResolvedValue({ sub: user.id, client_id: "portal-client", scope: "noesis.access", permissions }),
+    );
+
+    const get = await app.request(path, { headers });
+    const put = await app.request(path, { method: "PUT", headers, body: JSON.stringify({ backchannelLogoutUri }) });
+    const remove = await app.request(path, { method: "DELETE", headers });
+
+    expect(get.status).toBe(200);
+    expect(await get.json()).toEqual({ backchannelLogoutUri: null });
+    expect(put.status).toBe(200);
+    expect(await put.json()).toEqual({ backchannelLogoutUri });
+    expect(remove.status).toBe(200);
+    expect(await remove.json()).toEqual({ backchannelLogoutUri: null });
+    expect(resourceDetail).toHaveBeenCalledWith(resourceId, { id: user.id, permissions });
+    expect(setResourceLogoutUri.mock.calls).toEqual([
+      [resourceId, { id: user.id, permissions }, backchannelLogoutUri],
+      [resourceId, { id: user.id, permissions }, null],
+    ]);
+  });
+
+  it.each(["http://projects.example.test/logout", "https://a:b@projects.example.test/logout", "https://projects.example.test/logout#x"])(
+    "rejects an unsupported callback %s before updating storage",
+    async (backchannelLogoutUri) => {
+      const setResourceLogoutUri = vi.fn();
+      const app = managementApp(
+        { setResourceLogoutUri } as unknown as InternalApplicationService,
+        vi.fn().mockResolvedValue({ sub: user.id, client_id: "portal-client", scope: "noesis.access", permissions }),
+      );
+      const response = await app.request(path, { method: "PUT", headers, body: JSON.stringify({ backchannelLogoutUri }) });
+      expect(response.status).toBe(400);
+      expect(setResourceLogoutUri).not.toHaveBeenCalled();
+    },
+  );
 });

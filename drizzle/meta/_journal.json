@@ -120,6 +120,20 @@
       "when": 1794678517981,
       "tag": "0016_slippery_anthem",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1794736470475,
+      "tag": "0017_resource-creators",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1794736525137,
+      "tag": "0018_portal-scoped-permissions",
+      "breakpoints": true
     }
   ]
 }

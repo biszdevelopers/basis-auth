@@ -65,6 +65,10 @@ Production must set `NODE_ENV=production`, an HTTPS `OIDC_ISSUER`, persistent pr
 
 A resource can optionally set `backchannelLogoutUri` in `OIDC_RESOURCES_JSON` to an HTTPS callback. Set it to `null` to clear a stored callback. Access tokens default to 60 minutes, configurable with `ACCESS_TOKEN_LIFETIME_MS`.
 
+Before upgrading a database with existing resource servers, set `BASIS_RESOURCE_ROOT_USER_ID` to the UUID of the existing root user and set `MANAGEMENT_PORTAL_CLIENT_ID` to the management portal client. The migrations assign existing resource servers to that user and backfill the portal's own-application and own-resource grants. Existing portal sessions pick up the new grants when their access token refreshes or the user signs in again.
+
+Portal resource edits take effect as soon as Basis Auth saves them. Explicit `OIDC_RESOURCES_JSON` values are reapplied on startup. Omit `backchannelLogoutUri` to retain the saved URL. For portal-managed scope catalogs or resources that can be deleted in the portal, provision them in the database and remove their seed entries. Move dependent clients out of `OIDC_CLIENTS_JSON` before removing those entries, since seeded clients require their resource definitions in the startup configuration.
+
 For basishacks, register the dedicated resource audience `devconnect://nethack.bisz.dev` and the application scope `nethack.access`; the client explicitly requests it with `openid profile email offline_access`. Each client owns its permission definitions in the `permissions` object and may list explicitly defined defaults in `defaultPermissions`. User grants are scoped to the client that issued them, and a human access token contains only that application's grants. Defaults are copied to a user once, on their first successful login to that application. Additions to the default list do not change grants for users who have already logged in. The complete JSON example is in `.env.example`.
 
 An exact grant such as `nethack.Projects.read` covers that permission. A stored

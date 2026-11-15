@@ -5,21 +5,21 @@ import { isEphemeralLocalhostRedirectUri } from "../config.js";
 import type { Database } from "../database/client.js";
 import { defaultPermissions, oidcClientOrganizations, oidcClients, oidcPermissions, organizations, resourceServers, users } from "../database/schema.js";
 import { hashClientSecret, type ClientOwner, type StoredClientMetadata } from "../database/seed.js";
+import { scopesCover } from "../oauth/scopes.js";
 
 export const applicationPermissions = {
-  read: "BiszPortal.Applications.read",
   create: "BiszPortal.Applications.create",
-  update: "BiszPortal.Applications.update",
-  delete: "BiszPortal.Applications.delete",
   owners: "BiszPortal.ApplicationOwners.manage",
   resources: "BiszPortal.ApplicationResources.manage",
-  scopes: "BiszPortal.ApplicationScopes.manage",
   permissions: "BiszPortal.ApplicationPermissions.manage",
   redirects: "BiszPortal.ApplicationRedirectUris.manage",
   credentials: "BiszPortal.ApplicationCredentials.manage",
 } as const;
 
 export type ApplicationActor = { id: string; permissions: string[] };
+type ScopedAction = "read" | "update" | "delete";
+type ResourceRow = typeof resourceServers.$inferSelect;
+type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
 export type ApplicationSettingsInput = {
   name: string;
   requireConsent: boolean;
@@ -51,6 +51,12 @@ function metadataOf(row: typeof oidcClients.$inferSelect): StoredClientMetadata 
   } as StoredClientMetadata & { resourceScopes: Record<string, string[]> };
 }
 
+function assignedScopes(metadata: ReturnType<typeof metadataOf>, resourceId: string) {
+  return Object.hasOwn(metadata.resourceScopes, resourceId)
+    ? metadata.resourceScopes[resourceId]!
+    : metadata.scopes;
+}
+
 function hasPermission(actor: ApplicationActor, permission: string) {
   return new DelegatedPermissionSet(actor.permissions).has(permission as Permission);
 }
@@ -59,6 +65,39 @@ function requireGlobal(actor: ApplicationActor, permission: string) {
   if (!hasPermission(actor, permission)) {
     throw new InternalApplicationError(403, "forbidden", "The required application permission is missing");
   }
+}
+
+function hasScopedPermission(
+  actor: ApplicationActor,
+  section: "Applications" | "Resources",
+  action: ScopedAction,
+  own: boolean,
+) {
+  return hasPermission(actor, `BiszPortal.${section}.${action}.${own ? "me" : "others"}`);
+}
+
+function requireScopedAccess(
+  actor: ApplicationActor,
+  section: "Applications" | "Resources",
+  action: ScopedAction,
+) {
+  if (!hasScopedPermission(actor, section, action, true) && !hasScopedPermission(actor, section, action, false)) {
+    throw new InternalApplicationError(403, "forbidden", `The required ${section.toLowerCase()} permission is missing`);
+  }
+}
+
+function canAccessResource(actor: ApplicationActor, resource: ResourceRow, action: ScopedAction) {
+  return hasScopedPermission(actor, "Resources", action, resource.createdBy === actor.id);
+}
+
+function requireResourceAccess(actor: ApplicationActor, resource: ResourceRow | undefined, action: ScopedAction) {
+  if (!resource || !canAccessResource(actor, resource, "read")) {
+    throw new InternalApplicationError(404, "resource_not_found", "Resource not found");
+  }
+  if (!canAccessResource(actor, resource, action)) {
+    throw new InternalApplicationError(403, "forbidden", "You do not have permission for this resource action");
+  }
+  return resource;
 }
 
 function requireAdmin(role: ClientOwner["role"]) {
@@ -85,17 +124,27 @@ function validRedirectUri(value: string, isPublic: boolean) {
 }
 
 export function createInternalApplicationService(db: Database, issuer: string, invalidateClient: (clientId: string) => void) {
-  async function clientRow(clientId: string) {
-    const [row] = await db.select().from(oidcClients).where(eq(oidcClients.clientId, clientId)).limit(1);
+  async function clientRow(clientId: string, database: Database | Transaction = db) {
+    const [row] = await database.select().from(oidcClients).where(eq(oidcClients.clientId, clientId)).limit(1);
     return row;
   }
 
-  async function accessible(clientId: string, actor: ApplicationActor, permission: string = applicationPermissions.read) {
-    requireGlobal(actor, permission);
-    const row = await clientRow(clientId);
+  async function readApplication(clientId: string, actor: ApplicationActor, action: ScopedAction = "read", database: Database | Transaction = db) {
+    requireScopedAccess(actor, "Applications", action);
+    const row = await clientRow(clientId, database);
     if (!row) throw new InternalApplicationError(404, "not_found", "Application not found");
     const metadata = metadataOf(row);
     const membership = metadata.owners.find((owner) => owner.id === actor.id);
+    if (!hasScopedPermission(actor, "Applications", action, Boolean(membership))) {
+      throw new InternalApplicationError(404, "not_found", "Application not found");
+    }
+    if (action !== "read" && membership) requireAdmin(membership.role);
+    return { row, metadata, membership };
+  }
+
+  async function accessible(clientId: string, actor: ApplicationActor, permission: string, database: Database | Transaction = db) {
+    requireGlobal(actor, permission);
+    const { row, metadata, membership } = await readApplication(clientId, actor, "read", database);
     if (!membership) throw new InternalApplicationError(404, "not_found", "Application not found");
     return { row, metadata, membership };
   }
@@ -106,28 +155,32 @@ export function createInternalApplicationService(db: Database, issuer: string, i
     return rows;
   }
 
-  async function saveMetadata(clientId: string, metadata: StoredClientMetadata) {
-    await db.update(oidcClients).set({ metadata, updatedAt: new Date() }).where(eq(oidcClients.clientId, clientId));
+  function metadataPatch(fields: Partial<StoredClientMetadata>) {
+    return sql`${oidcClients.metadata} || ${JSON.stringify(fields)}::jsonb`;
+  }
+
+  async function saveMetadata(clientId: string, fields: Partial<StoredClientMetadata>) {
+    await db.update(oidcClients).set({ metadata: metadataPatch(fields), updatedAt: new Date() }).where(eq(oidcClients.clientId, clientId));
     invalidateClient(clientId);
   }
 
   async function list(actor: ApplicationActor) {
-    requireGlobal(actor, applicationPermissions.read);
+    requireScopedAccess(actor, "Applications", "read");
     const rows = await db.select().from(oidcClients);
     return rows.map((row) => ({ row, metadata: metadataOf(row) }))
-      .filter(({ metadata }) => metadata.owners.some((owner) => owner.id === actor.id))
+      .filter(({ metadata }) => hasScopedPermission(actor, "Applications", "read", metadata.owners.some((owner) => owner.id === actor.id)))
       .map(({ row, metadata }) => ({ clientId: row.clientId, name: metadata.name }))
       .sort((a, b) => a.name.localeCompare(b.name));
   }
 
   async function listOrganizations(actor: ApplicationActor) {
-    requireGlobal(actor, applicationPermissions.read);
+    requireScopedAccess(actor, "Applications", "read");
     return db.select({ organizationId: organizations.organizationId, firstParty: organizations.firstParty }).from(organizations);
   }
 
   async function createApplication(actor: ApplicationActor, input: ApplicationSettingsInput & { public: boolean; redirectUris: string[] }) {
     requireGlobal(actor, applicationPermissions.create);
-    requireGlobal(actor, applicationPermissions.read);
+    requireGlobal(actor, "BiszPortal.Applications.read.me");
     if (input.redirectUris.some((uri) => !validRedirectUri(uri, input.public))) {
       throw new InternalApplicationError(400, "invalid_redirect_uris", "One or more redirect URIs are invalid for this client type");
     }
@@ -144,7 +197,7 @@ export function createInternalApplicationService(db: Database, issuer: string, i
       resourceScopes: { [resourceId]: [] },
     };
     await db.transaction(async (tx) => {
-      await tx.insert(resourceServers).values({ audience: resourceId, name: `${input.name} API`, scopes: [] });
+      await tx.insert(resourceServers).values({ audience: resourceId, name: `${input.name} API`, scopes: [], createdBy: actor.id });
       await tx.insert(oidcClients).values({
         clientId,
         metadata,
@@ -160,7 +213,9 @@ export function createInternalApplicationService(db: Database, issuer: string, i
   }
 
   async function detail(clientId: string, actor: ApplicationActor) {
-    const { row, metadata, membership } = await accessible(clientId, actor);
+    const { row, metadata, membership } = await readApplication(clientId, actor);
+    const own = Boolean(membership);
+    const isAdmin = membership?.role === "role.ADMIN";
     const [resources, allClients, linkedOrganizations, availableOrganizations, permissions, defaults] = await Promise.all([
       db.select().from(resourceServers).where(inArray(resourceServers.audience, row.resources)),
       db.select({ clientId: oidcClients.clientId, resources: oidcClients.resources }).from(oidcClients),
@@ -193,29 +248,32 @@ export function createInternalApplicationService(db: Database, issuer: string, i
       availableOrganizations,
       updatedAt: row.updatedAt.toISOString(),
       permissionCatalogVersion: row.permissionCatalogVersion,
-      role: membership.role,
+      role: membership?.role ?? null,
       capabilities: {
-        update: membership.role === "role.ADMIN" && hasPermission(actor, applicationPermissions.update),
-        delete: membership.role === "role.ADMIN" && hasPermission(actor, applicationPermissions.delete),
-        manageOwners: membership.role === "role.ADMIN" && hasPermission(actor, applicationPermissions.owners),
-        manageResources: hasPermission(actor, applicationPermissions.resources),
-        manageScopes: hasPermission(actor, applicationPermissions.scopes),
-        managePermissions: hasPermission(actor, applicationPermissions.permissions),
-        manageRedirectUris: hasPermission(actor, applicationPermissions.redirects),
-        manageCredentials: membership.role === "role.ADMIN" && hasPermission(actor, applicationPermissions.credentials),
+        update: (!own || isAdmin) && hasScopedPermission(actor, "Applications", "update", own),
+        delete: (!own || isAdmin) && hasScopedPermission(actor, "Applications", "delete", own),
+        manageOwners: isAdmin && hasPermission(actor, applicationPermissions.owners),
+        manageResources: own && hasPermission(actor, applicationPermissions.resources),
+        manageScopes: own && hasPermission(actor, applicationPermissions.resources),
+        managePermissions: own && hasPermission(actor, applicationPermissions.permissions),
+        manageRedirectUris: own && hasPermission(actor, applicationPermissions.redirects),
+        manageCredentials: isAdmin && hasPermission(actor, applicationPermissions.credentials),
       },
       owners: metadata.owners.map((owner) => {
         const person = peopleById.get(owner.id);
         return { userId: owner.id, displayName: person?.displayName?.trim() || "Unknown user", image: person?.hasPicture ? `${issuer}/api/picture/${owner.id}` : null, disabled: person?.disabled ?? true, role: owner.role };
       }),
-      resources: resources.map((resource) => ({
+      resources: resources.filter((resource) => canAccessResource(actor, resource, "read")).map((resource) => ({
         resourceId: resource.audience,
         name: resource.name,
         availableScopes: resource.scopes,
-        grantedScopes: metadata.resourceScopes[resource.audience] ?? [],
+        grantedScopes: assignedScopes(metadata, resource.audience),
         claimCount: allClients.filter((client) => client.resources.includes(resource.audience)).length,
+        canUpdate: canAccessResource(actor, resource, "update"),
+        canDelete: canAccessResource(actor, resource, "delete"),
       })),
-      availableResources: (await db.select().from(resourceServers)).map((resource) => ({ resourceId: resource.audience, name: resource.name, availableScopes: resource.scopes })),
+      availableResources: (await db.select().from(resourceServers)).filter((resource) => canAccessResource(actor, resource, "read"))
+        .map((resource) => ({ resourceId: resource.audience, name: resource.name, availableScopes: resource.scopes })),
       permissions,
       defaultPermissions: defaults.map(({ permission }) => permission).sort(),
       redirectUris: metadata.redirectUris,
@@ -223,12 +281,12 @@ export function createInternalApplicationService(db: Database, issuer: string, i
   }
 
   async function updateApplication(clientId: string, actor: ApplicationActor, input: ApplicationSettingsInput) {
-    const { metadata, membership } = await accessible(clientId, actor, applicationPermissions.update);
-    requireAdmin(membership.role);
+    await readApplication(clientId, actor);
+    await readApplication(clientId, actor, "update");
     const linkedOrganizations = await organizationRows(unique(input.organizationIds));
     await db.transaction(async (tx) => {
       await tx.update(oidcClients).set({
-        metadata: { ...metadata, name: input.name },
+        metadata: metadataPatch({ name: input.name }),
         requireConsent: input.requireConsent,
         filterMode: input.filterMode,
         filterContent: input.filterMode ? unique(input.filterContent.map((value) => value.trim().toLowerCase())) : [],
@@ -241,9 +299,11 @@ export function createInternalApplicationService(db: Database, issuer: string, i
   }
 
   async function deleteApplication(clientId: string, actor: ApplicationActor) {
-    const { membership } = await accessible(clientId, actor, applicationPermissions.delete);
-    requireAdmin(membership.role);
-    await db.delete(oidcClients).where(eq(oidcClients.clientId, clientId));
+    requireScopedAccess(actor, "Applications", "delete");
+    await editResourceAssignments(async (tx) => {
+      await readApplication(clientId, actor, "delete", tx);
+      await tx.delete(oidcClients).where(eq(oidcClients.clientId, clientId));
+    });
     invalidateClient(clientId);
   }
 
@@ -254,15 +314,15 @@ export function createInternalApplicationService(db: Database, issuer: string, i
       throw new InternalApplicationError(409, "invalid_client_type", "Remove ephemeral localhost redirect URIs before making this client confidential");
     }
     const clientSecret = generatedSecret();
-    await db.update(oidcClients).set({ secretHash: await hashClientSecret(clientSecret), metadata: { ...metadata, public: false }, updatedAt: new Date() }).where(eq(oidcClients.clientId, clientId));
+    await db.update(oidcClients).set({ secretHash: await hashClientSecret(clientSecret), metadata: metadataPatch({ public: false }), updatedAt: new Date() }).where(eq(oidcClients.clientId, clientId));
     invalidateClient(clientId);
     return clientSecret;
   }
 
   async function removeSecret(clientId: string, actor: ApplicationActor) {
-    const { metadata, membership } = await accessible(clientId, actor, applicationPermissions.credentials);
+    const { membership } = await accessible(clientId, actor, applicationPermissions.credentials);
     requireAdmin(membership.role);
-    await db.update(oidcClients).set({ secretHash: null, metadata: { ...metadata, public: true }, updatedAt: new Date() }).where(eq(oidcClients.clientId, clientId));
+    await db.update(oidcClients).set({ secretHash: null, metadata: metadataPatch({ public: true }), updatedAt: new Date() }).where(eq(oidcClients.clientId, clientId));
     invalidateClient(clientId);
   }
 
@@ -272,7 +332,7 @@ export function createInternalApplicationService(db: Database, issuer: string, i
     if (metadata.owners.some((owner) => owner.id === userId)) throw new InternalApplicationError(409, "conflict", "User is already a member");
     const [person] = await db.select({ id: users.id, disabled: users.disabled }).from(users).where(eq(users.id, userId)).limit(1);
     if (!person || person.disabled) throw new InternalApplicationError(400, "invalid_user", "User does not exist or is disabled");
-    await saveMetadata(clientId, { ...metadata, owners: [...metadata.owners, { id: userId, role }] });
+    await saveMetadata(clientId, { owners: [...metadata.owners, { id: userId, role }] });
   }
 
   async function updateOwner(clientId: string, actor: ApplicationActor, userId: string, role: ClientOwner["role"]) {
@@ -281,7 +341,7 @@ export function createInternalApplicationService(db: Database, issuer: string, i
     const target = metadata.owners.find((owner) => owner.id === userId);
     if (!target) throw new InternalApplicationError(404, "not_found", "Application member not found");
     if (target.role === "role.ADMIN" && role !== "role.ADMIN" && metadata.owners.filter((owner) => owner.role === "role.ADMIN").length === 1) throw new InternalApplicationError(409, "last_admin", "The final application admin cannot be demoted");
-    await saveMetadata(clientId, { ...metadata, owners: metadata.owners.map((owner) => owner.id === userId ? { ...owner, role } : owner) });
+    await saveMetadata(clientId, { owners: metadata.owners.map((owner) => owner.id === userId ? { ...owner, role } : owner) });
   }
 
   async function removeOwner(clientId: string, actor: ApplicationActor, userId: string) {
@@ -290,67 +350,195 @@ export function createInternalApplicationService(db: Database, issuer: string, i
     const target = metadata.owners.find((owner) => owner.id === userId);
     if (!target) throw new InternalApplicationError(404, "not_found", "Application member not found");
     if (target.role === "role.ADMIN" && metadata.owners.filter((owner) => owner.role === "role.ADMIN").length === 1) throw new InternalApplicationError(409, "last_admin", "The final application admin cannot be removed");
-    await saveMetadata(clientId, { ...metadata, owners: metadata.owners.filter((owner) => owner.id !== userId) });
+    await saveMetadata(clientId, { owners: metadata.owners.filter((owner) => owner.id !== userId) });
+  }
+
+  async function resourceRow(resourceId: string, database: Database | Transaction = db) {
+    const [resource] = await database.select().from(resourceServers).where(eq(resourceServers.audience, resourceId)).limit(1);
+    return resource;
+  }
+
+  function editResourceAssignments<T>(operation: (tx: Transaction) => Promise<T>) {
+    return db.transaction(async (tx) => {
+      // Assignment writes and definition checks span both tables.
+      await tx.execute(sql`select pg_advisory_xact_lock(176436781, 1)`);
+      return operation(tx);
+    });
+  }
+
+  function attachedClients(tx: Transaction, resourceId: string) {
+    return tx.select().from(oidcClients)
+      .where(sql`${oidcClients.resources} @> ${JSON.stringify([resourceId])}::jsonb`);
+  }
+
+  async function assertScopesCoverAssignments(tx: Transaction, resource: ResourceRow, nextScopes: string[]) {
+    const removedScopes = new Set(resource.scopes.filter((scope) => !nextScopes.includes(scope)));
+    if (!removedScopes.size) return;
+    const clients = await attachedClients(tx, resource.audience);
+    for (const client of clients) {
+      const metadata = metadataOf(client);
+      const currentAssignments = assignedScopes(metadata, resource.audience)
+        .filter((scope) => scopesCover(resource.scopes, [scope]));
+      if (currentAssignments.some((scope) => removedScopes.has(scope)) || !scopesCover(nextScopes, currentAssignments)) {
+        throw new InternalApplicationError(409, "scope_in_use", "Remove the scope from the attached applications before deleting it from this resource");
+      }
+    }
+  }
+
+  function resourceView(resource: ResourceRow, actor: ApplicationActor) {
+    return {
+      resourceId: resource.audience,
+      name: resource.name,
+      availableScopes: resource.scopes,
+      backchannelLogoutUri: resource.backchannelLogoutUri,
+      capabilities: {
+        update: canAccessResource(actor, resource, "update"),
+        delete: canAccessResource(actor, resource, "delete"),
+      },
+    };
+  }
+
+  async function listResources(actor: ApplicationActor) {
+    requireScopedAccess(actor, "Resources", "read");
+    const resources = await db.select().from(resourceServers);
+    return resources.filter((resource) => canAccessResource(actor, resource, "read"))
+      .map(({ audience, name }) => ({ resourceId: audience, name }))
+      .sort((a, b) => a.name.localeCompare(b.name) || a.resourceId.localeCompare(b.resourceId));
+  }
+
+  async function resourceDetail(resourceId: string, actor: ApplicationActor) {
+    requireScopedAccess(actor, "Resources", "read");
+    return resourceView(requireResourceAccess(actor, await resourceRow(resourceId), "read"), actor);
+  }
+
+  async function updateResourceScope(resourceId: string, actor: ApplicationActor, input: { action: "add" | "remove"; scope: string }) {
+    requireScopedAccess(actor, "Resources", "update");
+    return editResourceAssignments(async (tx) => {
+      const resource = requireResourceAccess(actor, await resourceRow(resourceId, tx), "update");
+      const nextScopes = input.action === "add"
+        ? unique([...resource.scopes, input.scope])
+        : resource.scopes.filter((scope) => scope !== input.scope);
+      await assertScopesCoverAssignments(tx, resource, nextScopes);
+      const [updated] = await tx.update(resourceServers).set({ scopes: nextScopes, updatedAt: new Date() })
+        .where(eq(resourceServers.audience, resourceId)).returning();
+      return resourceView(updated!, actor);
+    });
+  }
+
+  async function setResourceLogoutUri(resourceId: string, actor: ApplicationActor, uri: string | null) {
+    requireScopedAccess(actor, "Resources", "update");
+    return db.transaction(async (tx) => {
+      const [resource] = await tx.select().from(resourceServers).where(eq(resourceServers.audience, resourceId)).for("update");
+      requireResourceAccess(actor, resource, "update");
+      await tx.update(resourceServers).set({ backchannelLogoutUri: uri, updatedAt: new Date() })
+        .where(eq(resourceServers.audience, resourceId));
+      return { backchannelLogoutUri: uri };
+    });
+  }
+
+  async function deleteResource(resourceId: string, actor: ApplicationActor) {
+    requireScopedAccess(actor, "Resources", "delete");
+    await editResourceAssignments(async (tx) => {
+      requireResourceAccess(actor, await resourceRow(resourceId, tx), "delete");
+      if ((await attachedClients(tx, resourceId)).length) {
+        throw new InternalApplicationError(409, "resource_in_use", "Detach this resource from all applications before deleting it");
+      }
+      await tx.delete(resourceServers).where(eq(resourceServers.audience, resourceId));
+    });
   }
 
   async function attachResource(clientId: string, actor: ApplicationActor, resourceId: string) {
-    const { row, metadata } = await accessible(clientId, actor, applicationPermissions.resources);
-    if (row.resources.includes(resourceId)) throw new InternalApplicationError(409, "conflict", "Resource is already attached");
-    const [resource] = await db.select().from(resourceServers).where(eq(resourceServers.audience, resourceId)).limit(1);
-    if (!resource) throw new InternalApplicationError(404, "resource_not_found", "Resource not found");
-    await db.update(oidcClients).set({ resources: [...row.resources, resourceId], metadata: { ...metadata, resourceScopes: { ...metadata.resourceScopes, [resourceId]: [] } }, updatedAt: new Date() }).where(eq(oidcClients.clientId, clientId));
+    await editResourceAssignments(async (tx) => {
+      const { row, metadata } = await accessible(clientId, actor, applicationPermissions.resources, tx);
+      requireResourceAccess(actor, await resourceRow(resourceId, tx), "read");
+      if (row.resources.includes(resourceId)) throw new InternalApplicationError(409, "conflict", "Resource is already attached");
+      await tx.update(oidcClients).set({
+        resources: [...row.resources, resourceId],
+        metadata: metadataPatch({ resourceScopes: { ...metadata.resourceScopes, [resourceId]: [] } }),
+        updatedAt: new Date(),
+      }).where(eq(oidcClients.clientId, clientId));
+    });
     invalidateClient(clientId);
   }
 
   async function createResource(clientId: string, actor: ApplicationActor, input: { resourceId: string; name: string; availableScopes: string[] }) {
-    const { row, metadata } = await accessible(clientId, actor, applicationPermissions.resources);
-    const [existing] = await db.select().from(resourceServers).where(eq(resourceServers.audience, input.resourceId)).limit(1);
-    if (existing) throw new InternalApplicationError(409, "conflict", "Resource already exists");
-    await db.transaction(async (tx) => {
-      await tx.insert(resourceServers).values({ audience: input.resourceId, name: input.name, scopes: unique(input.availableScopes) });
-      await tx.update(oidcClients).set({ resources: [...row.resources, input.resourceId], metadata: { ...metadata, resourceScopes: { ...metadata.resourceScopes, [input.resourceId]: [] } }, updatedAt: new Date() }).where(eq(oidcClients.clientId, clientId));
+    await editResourceAssignments(async (tx) => {
+      const { row, metadata } = await accessible(clientId, actor, applicationPermissions.resources, tx);
+      const [created] = await tx.insert(resourceServers).values({
+        audience: input.resourceId, name: input.name, scopes: unique(input.availableScopes), createdBy: actor.id,
+      }).onConflictDoNothing().returning({ audience: resourceServers.audience });
+      if (!created) throw new InternalApplicationError(409, "conflict", "Resource already exists");
+      await tx.update(oidcClients).set({
+        resources: [...row.resources, input.resourceId],
+        metadata: metadataPatch({ resourceScopes: { ...metadata.resourceScopes, [input.resourceId]: [] } }),
+        updatedAt: new Date(),
+      }).where(eq(oidcClients.clientId, clientId));
     });
     invalidateClient(clientId);
   }
 
   async function updateResource(clientId: string, actor: ApplicationActor, input: { resourceId: string; name: string; availableScopes: string[] }) {
-    const { row, metadata } = await accessible(clientId, actor, applicationPermissions.resources);
-    if (!row.resources.includes(input.resourceId)) throw new InternalApplicationError(404, "not_found", "Resource not found");
-    const clients = await db.select({ resources: oidcClients.resources }).from(oidcClients);
-    if (clients.filter((client) => client.resources.includes(input.resourceId)).length > 1) throw new InternalApplicationError(409, "resource_shared", "Shared resources cannot be edited from an application");
-    const availableScopes = unique(input.availableScopes);
-    const granted = (metadata.resourceScopes[input.resourceId] ?? []).filter((scope) => availableScopes.includes(scope));
-    const resourceScopes = { ...metadata.resourceScopes, [input.resourceId]: granted };
-    await db.transaction(async (tx) => {
-      await tx.update(resourceServers).set({ name: input.name, scopes: availableScopes, updatedAt: new Date() }).where(eq(resourceServers.audience, input.resourceId));
-      await tx.update(oidcClients).set({ metadata: { ...metadata, resourceScopes, scopes: unique(Object.values(resourceScopes).flat()) }, updatedAt: new Date() }).where(eq(oidcClients.clientId, clientId));
+    await editResourceAssignments(async (tx) => {
+      const { row } = await accessible(clientId, actor, applicationPermissions.resources, tx);
+      if (!row.resources.includes(input.resourceId)) throw new InternalApplicationError(404, "not_found", "Resource not found");
+      const resource = requireResourceAccess(actor, await resourceRow(input.resourceId, tx), "update");
+      if ((await attachedClients(tx, input.resourceId)).length > 1) {
+        throw new InternalApplicationError(409, "resource_shared", "Shared resources cannot be edited from an application");
+      }
+      const scopes = unique(input.availableScopes);
+      await assertScopesCoverAssignments(tx, resource, scopes);
+      await tx.update(resourceServers).set({ name: input.name, scopes, updatedAt: new Date() })
+        .where(eq(resourceServers.audience, input.resourceId));
     });
-    invalidateClient(clientId);
   }
 
   async function removeResource(clientId: string, actor: ApplicationActor, resourceId: string, deleteDefinition: boolean) {
-    const { row, metadata } = await accessible(clientId, actor, applicationPermissions.resources);
-    if (!row.resources.includes(resourceId)) throw new InternalApplicationError(404, "not_found", "Resource not found");
-    if (row.resources.length === 1) throw new InternalApplicationError(409, "last_resource", "An application must retain at least one resource");
-    const clients = await db.select({ resources: oidcClients.resources }).from(oidcClients);
-    const claims = clients.filter((client) => client.resources.includes(resourceId));
-    if (deleteDefinition && claims.length > 1) throw new InternalApplicationError(409, "resource_shared", "Shared resources cannot be deleted");
-    const resourceScopes = { ...metadata.resourceScopes };
-    delete resourceScopes[resourceId];
-    await db.transaction(async (tx) => {
-      await tx.update(oidcClients).set({ resources: row.resources.filter((resource) => resource !== resourceId), metadata: { ...metadata, resourceScopes, scopes: unique(Object.values(resourceScopes).flat()) }, updatedAt: new Date() }).where(eq(oidcClients.clientId, clientId));
+    await editResourceAssignments(async (tx) => {
+      const { row, metadata } = await accessible(clientId, actor, applicationPermissions.resources, tx);
+      if (!row.resources.includes(resourceId)) throw new InternalApplicationError(404, "not_found", "Resource not found");
+      requireResourceAccess(actor, await resourceRow(resourceId, tx), deleteDefinition ? "delete" : "read");
+      if (row.resources.length === 1) throw new InternalApplicationError(409, "last_resource", "An application must retain at least one resource");
+      if (deleteDefinition && (await attachedClients(tx, resourceId)).length > 1) {
+        throw new InternalApplicationError(409, "resource_shared", "Shared resources cannot be deleted");
+      }
+      const resourceScopes = { ...metadata.resourceScopes };
+      delete resourceScopes[resourceId];
+      await tx.update(oidcClients).set({
+        resources: row.resources.filter((resource) => resource !== resourceId),
+        metadata: metadataPatch({ resourceScopes, scopes: unique(Object.values(resourceScopes).flat()) }),
+        updatedAt: new Date(),
+      }).where(eq(oidcClients.clientId, clientId));
       if (deleteDefinition) await tx.delete(resourceServers).where(eq(resourceServers.audience, resourceId));
     });
     invalidateClient(clientId);
   }
 
   async function updateScopes(clientId: string, actor: ApplicationActor, input: Record<string, string[]>) {
-    const { row, metadata } = await accessible(clientId, actor, applicationPermissions.scopes);
-    if (Object.keys(input).some((resource) => !row.resources.includes(resource))) throw new InternalApplicationError(400, "invalid_scopes", "Scopes contain an unclaimed resource");
-    const resources = await db.select().from(resourceServers).where(inArray(resourceServers.audience, row.resources));
-    for (const resource of resources) if ((input[resource.audience] ?? []).some((scope) => !resource.scopes.includes(scope))) throw new InternalApplicationError(400, "invalid_scopes", `Unsupported scope for ${resource.audience}`);
-    const resourceScopes = Object.fromEntries(row.resources.map((resource) => [resource, unique(input[resource] ?? [])]));
-    await saveMetadata(clientId, { ...metadata, resourceScopes, scopes: unique(Object.values(resourceScopes).flat()) });
+    await editResourceAssignments(async (tx) => {
+      const { row, metadata } = await accessible(clientId, actor, applicationPermissions.resources, tx);
+      const resources = await tx.select().from(resourceServers).where(inArray(resourceServers.audience, row.resources));
+      const visible = resources.filter((resource) => canAccessResource(actor, resource, "read"));
+      const visibleIds = new Set(visible.map((resource) => resource.audience));
+      if (Object.keys(input).some((resource) => !visibleIds.has(resource))) {
+        throw new InternalApplicationError(400, "invalid_scopes", "Scopes contain an unavailable resource");
+      }
+      for (const resource of visible) {
+        if (Object.hasOwn(input, resource.audience) && input[resource.audience]!.some((scope) => !resource.scopes.includes(scope))) {
+          throw new InternalApplicationError(400, "invalid_scopes", `Unsupported scope for ${resource.audience}`);
+        }
+      }
+      const resourceScopes = Object.fromEntries(row.resources.map((resource) => [
+        resource,
+        visibleIds.has(resource)
+          ? unique(Object.hasOwn(input, resource) ? input[resource]! : [])
+          : assignedScopes(metadata, resource),
+      ]));
+      await tx.update(oidcClients).set({
+        metadata: metadataPatch({ resourceScopes, scopes: unique(Object.values(resourceScopes).flat()) }),
+        updatedAt: new Date(),
+      }).where(eq(oidcClients.clientId, clientId));
+    });
+    invalidateClient(clientId);
   }
 
   async function createPermission(clientId: string, actor: ApplicationActor, permission: string, description: string) {
@@ -422,10 +610,16 @@ export function createInternalApplicationService(db: Database, issuer: string, i
     const { metadata } = await accessible(clientId, actor, applicationPermissions.redirects);
     const values = unique(redirectUris);
     if (!values.length || values.length !== redirectUris.length || values.some((uri) => !validRedirectUri(uri, metadata.public))) throw new InternalApplicationError(400, "invalid_redirect_uris", "Redirect URIs must be unique and valid for this client type");
-    await saveMetadata(clientId, { ...metadata, redirectUris: values });
+    await saveMetadata(clientId, { redirectUris: values });
   }
 
-  return { list, listOrganizations, detail, createApplication, updateApplication, deleteApplication, rotateSecret, removeSecret, addOwner, updateOwner, removeOwner, attachResource, createResource, updateResource, removeResource, updateScopes, createPermission, updatePermission, deletePermission, updateDefaultPermissions, updateRedirectUris };
+  return {
+    list, listOrganizations, detail, createApplication, updateApplication, deleteApplication,
+    rotateSecret, removeSecret, addOwner, updateOwner, removeOwner, attachResource, createResource,
+    updateResource, removeResource, updateScopes, createPermission, updatePermission,
+    deletePermission, updateDefaultPermissions, updateRedirectUris, listResources, resourceDetail,
+    updateResourceScope, setResourceLogoutUri, deleteResource,
+  };
 }
 
 export type InternalApplicationService = ReturnType<typeof createInternalApplicationService>;

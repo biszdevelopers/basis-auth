@@ -3,6 +3,7 @@ import { DelegatedPermissionSet, type Permission } from "@basis/schema/permissio
 import { Hono, type Context } from "hono";
 import { secureHeaders } from "hono/secure-headers";
 import { z } from "zod";
+import { backchannelLogoutUriSchema } from "../config.js";
 import type { KeyService } from "../oauth/keys.js";
 import type { createLogoutService } from "../oauth/logout.js";
 import {
@@ -170,6 +171,42 @@ export function createInternalApp(
       organizationIds: z.array(z.uuid()).min(1).refine((values) => new Set(values).size === values.length, "Organization IDs must be unique"),
     });
     const permissionSchema = z.object({ permission: z.string().trim().min(1), description: z.string().trim().min(1) });
+    const resourceScopeChangeSchema = z.discriminatedUnion("action", [
+      z.object({
+        action: z.literal("add"),
+        scope: z.string().trim().regex(/^[\x21\x23-\x5b\x5d-\x7e]+$/, "Enter one valid OAuth scope"),
+      }),
+      z.object({ action: z.literal("remove"), scope: z.string().min(1) }),
+    ]);
+    const logoutUriSchema = z.object({ backchannelLogoutUri: backchannelLogoutUriSchema });
+
+    app.get("/internal/resources", (c) => managed(c, async (who) => ({
+      resources: await management.applications.listResources(who),
+    })));
+    app.get("/internal/resources/:resourceId", (c) => managed(c, async (who) => ({
+      resource: await management.applications.resourceDetail(c.req.param("resourceId"), who),
+    })));
+    app.patch("/internal/resources/:resourceId/scopes", (c) => managed(c, async (who) => ({
+      resource: await management.applications.updateResourceScope(
+        c.req.param("resourceId"), who, resourceScopeChangeSchema.parse(await c.req.json()),
+      ),
+    })));
+    app.get("/internal/resources/:resourceId/backchannel/logout", (c) => managed(c, async (who) => {
+      const { backchannelLogoutUri } = await management.applications.resourceDetail(c.req.param("resourceId"), who);
+      return { backchannelLogoutUri };
+    }));
+    app.put("/internal/resources/:resourceId/backchannel/logout", (c) => managed(c, async (who) => {
+      const { backchannelLogoutUri } = logoutUriSchema.parse(await c.req.json());
+      return management.applications.setResourceLogoutUri(c.req.param("resourceId"), who, backchannelLogoutUri);
+    }));
+    app.delete("/internal/resources/:resourceId/backchannel/logout", (c) => managed(c, (who) =>
+      management.applications.setResourceLogoutUri(c.req.param("resourceId"), who, null),
+    ));
+    app.delete("/internal/resources/:resourceId", (c) => managed(c, async (who) => {
+      const resourceId = c.req.param("resourceId");
+      await management.applications.deleteResource(resourceId, who);
+      return { deleted: true, resourceId };
+    }));
 
     app.get("/internal/users", (c) => managed(c, async (who) => {
       if (!new DelegatedPermissionSet(who.permissions).has("BiszPortal.Users.read" as Permission)) {
