@@ -20,14 +20,16 @@ function logoutApp(resources: { uri: string | null }[], issueLogoutToken = vi.fn
     select: () => ({ from: () => ({ where: () => ({ limit }) }) }),
   } as unknown as Database;
   const users = { findUser: vi.fn().mockResolvedValue({ id: userId }) } as unknown as InternalUserService;
-  const app = createInternalApp(internalToken, users, undefined, createLogoutService(db, { issueLogoutToken }));
+  const app = createInternalApp({
+    verifyResource: async (id, secret) => id === audience && secret === internalToken,
+  }, users, undefined, createLogoutService(db, { issueLogoutToken }));
   return { app, limit, issueLogoutToken };
 }
 
 function requestLogout(app: ReturnType<typeof createInternalApp>, authenticated = true, body: unknown = { audience }) {
   return app.request(`/internal/users/${userId}/logout`, {
     method: "POST",
-    headers: authenticated ? { authorization: `Bearer ${internalToken}` } : {},
+    headers: authenticated ? { authorization: `Bearer ${internalToken}`, "x-basis-resource": encodeURIComponent(audience) } : {},
     body: JSON.stringify(body),
   });
 }
@@ -67,6 +69,7 @@ describe("internal back-channel logout", () => {
     const { app, limit } = logoutApp([{ uri }]);
     expect((await requestLogout(app, false)).status).toBe(401);
     expect((await requestLogout(app, true, {})).status).toBe(400);
+    expect((await requestLogout(app, true, { audience: "urn:basis:api:other" })).status).toBe(403);
     expect(limit).not.toHaveBeenCalled();
   });
 
@@ -94,10 +97,21 @@ describe("internal back-channel logout", () => {
 });
 
 describe("back-channel logout resource configuration", () => {
-  it("accepts an optional HTTPS endpoint without credentials or a fragment", () => {
+  it("accepts HTTPS and localhost HTTP endpoints without credentials or fragments", () => {
     expect(resourceSchema.parse({ audience, backchannelLogoutUri: uri }).backchannelLogoutUri).toBe(uri);
+    const localhost = "http://localhost:4321/logout";
+    expect(resourceSchema.parse({ audience, backchannelLogoutUri: localhost }).backchannelLogoutUri).toBe(localhost);
     expect(resourceSchema.parse({ audience, backchannelLogoutUri: null }).backchannelLogoutUri).toBeNull();
-    for (const value of ["http://example.test/logout", "https://user@example.test/logout", `${uri}#`]) {
+    for (const value of [
+      "http://example.test/logout",
+      "http://localhost.example.test/logout",
+      "http://127.0.0.1/logout",
+      "http://[::1]/logout",
+      "http://user@localhost/logout",
+      "http://localhost/logout#",
+      "https://user@example.test/logout",
+      `${uri}#`,
+    ]) {
       expect(resourceSchema.safeParse({ audience, backchannelLogoutUri: value }).success).toBe(false);
     }
   });

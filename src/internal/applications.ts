@@ -1,11 +1,12 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { DelegatedPermissionSet, type Permission } from "@basis/schema/permissions";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { isEphemeralLocalhostRedirectUri } from "../config.js";
 import type { Database } from "../database/client.js";
 import { defaultPermissions, oidcClientOrganizations, oidcClients, oidcPermissions, organizations, resourceServers, users } from "../database/schema.js";
-import { hashClientSecret, type ClientOwner, type StoredClientMetadata } from "../database/seed.js";
+import { generateSecret, hashClientSecret, hashNewResourceSecret, type ClientOwner, type StoredClientMetadata } from "../database/seed.js";
 import { scopesCover } from "../oauth/scopes.js";
+import { createBackchannelVerifier } from "./backchannel.js";
 
 export const applicationPermissions = {
   create: "BiszPortal.Applications.create",
@@ -29,7 +30,7 @@ export type ApplicationSettingsInput = {
 };
 
 export class InternalApplicationError extends Error {
-  constructor(readonly status: 400 | 403 | 404 | 409, readonly code: string, message: string) {
+  constructor(readonly status: 400 | 403 | 404 | 409 | 502 | 504, readonly code: string, message: string) {
     super(message);
   }
 }
@@ -108,10 +109,6 @@ function unique(values: string[]) {
   return [...new Set(values)];
 }
 
-function generatedSecret() {
-  return `sk-${randomBytes(32).toString("base64url")}`;
-}
-
 function validRedirectUri(value: string, isPublic: boolean) {
   if (isEphemeralLocalhostRedirectUri(value)) return isPublic;
   try {
@@ -123,7 +120,12 @@ function validRedirectUri(value: string, isPublic: boolean) {
   }
 }
 
-export function createInternalApplicationService(db: Database, issuer: string, invalidateClient: (clientId: string) => void) {
+export function createInternalApplicationService(
+  db: Database,
+  issuer: string,
+  invalidateClient: (clientId: string) => void,
+  backchannel = createBackchannelVerifier(db),
+) {
   async function clientRow(clientId: string, database: Database | Transaction = db) {
     const [row] = await database.select().from(oidcClients).where(eq(oidcClients.clientId, clientId)).limit(1);
     return row;
@@ -187,7 +189,8 @@ export function createInternalApplicationService(db: Database, issuer: string, i
     const linkedOrganizations = await organizationRows(unique(input.organizationIds));
     const clientId = randomUUID();
     const resourceId = `urn:basis:api:${clientId}`;
-    const clientSecret = input.public ? null : generatedSecret();
+    const clientSecret = input.public ? null : generateSecret();
+    const resourceSecretHash = await hashNewResourceSecret();
     const metadata: StoredClientMetadata = {
       name: input.name,
       owners: [{ id: actor.id, role: "role.ADMIN" }],
@@ -197,7 +200,9 @@ export function createInternalApplicationService(db: Database, issuer: string, i
       resourceScopes: { [resourceId]: [] },
     };
     await db.transaction(async (tx) => {
-      await tx.insert(resourceServers).values({ audience: resourceId, name: `${input.name} API`, scopes: [], createdBy: actor.id });
+      await tx.insert(resourceServers).values({
+        audience: resourceId, name: `${input.name} API`, scopes: [], createdBy: actor.id, secretHash: resourceSecretHash,
+      });
       await tx.insert(oidcClients).values({
         clientId,
         metadata,
@@ -313,7 +318,7 @@ export function createInternalApplicationService(db: Database, issuer: string, i
     if (metadata.redirectUris.some(isEphemeralLocalhostRedirectUri)) {
       throw new InternalApplicationError(409, "invalid_client_type", "Remove ephemeral localhost redirect URIs before making this client confidential");
     }
-    const clientSecret = generatedSecret();
+    const clientSecret = generateSecret();
     await db.update(oidcClients).set({ secretHash: await hashClientSecret(clientSecret), metadata: metadataPatch({ public: false }), updatedAt: new Date() }).where(eq(oidcClients.clientId, clientId));
     invalidateClient(clientId);
     return clientSecret;
@@ -425,14 +430,57 @@ export function createInternalApplicationService(db: Database, issuer: string, i
     });
   }
 
+  async function saveLogoutUri(
+    resourceId: string,
+    uri: string | null,
+    authorize: (resource: ResourceRow | undefined) => ResourceRow,
+    skipUnchanged = false,
+  ) {
+    const previous = authorize(await resourceRow(resourceId));
+    if (skipUnchanged && previous.backchannelLogoutUri === uri) return { backchannelLogoutUri: uri };
+    if (uri !== null) {
+      const result = await backchannel.verifyDestination(resourceId, uri);
+      if (result === "timeout") {
+        throw new InternalApplicationError(504, "backchannel_timeout", "The resource did not complete webhook verification in time");
+      }
+      if (result !== "verified") {
+        throw new InternalApplicationError(502, "backchannel_test_failed", "The webhook test failed. The endpoint must accept the test with HTTP 202");
+      }
+    }
+
+    return db.transaction(async (tx) => {
+      const [resource] = await tx.select().from(resourceServers).where(eq(resourceServers.audience, resourceId)).for("update");
+      const current = authorize(resource);
+      if (uri !== null && (current.secretHash !== previous.secretHash || current.backchannelLogoutUri !== previous.backchannelLogoutUri)) {
+        throw new InternalApplicationError(409, "backchannel_changed", "The resource secret or webhook changed during verification. Try again");
+      }
+      await tx.update(resourceServers).set({ backchannelLogoutUri: uri, updatedAt: new Date() })
+        .where(eq(resourceServers.audience, resourceId));
+      return { backchannelLogoutUri: uri };
+    });
+  }
+
   async function setResourceLogoutUri(resourceId: string, actor: ApplicationActor, uri: string | null) {
+    requireScopedAccess(actor, "Resources", "update");
+    return saveLogoutUri(resourceId, uri, (resource) => requireResourceAccess(actor, resource, "update"));
+  }
+
+  function reconcileConfiguredLogoutUri(resourceId: string, uri: string) {
+    return saveLogoutUri(resourceId, uri, (resource) => {
+      if (!resource) throw new InternalApplicationError(404, "resource_not_found", "Resource not found");
+      return resource;
+    }, true);
+  }
+
+  async function rotateResourceSecret(resourceId: string, actor: ApplicationActor) {
     requireScopedAccess(actor, "Resources", "update");
     return db.transaction(async (tx) => {
       const [resource] = await tx.select().from(resourceServers).where(eq(resourceServers.audience, resourceId)).for("update");
       requireResourceAccess(actor, resource, "update");
-      await tx.update(resourceServers).set({ backchannelLogoutUri: uri, updatedAt: new Date() })
+      const secret = generateSecret();
+      await tx.update(resourceServers).set({ secretHash: await hashClientSecret(secret), updatedAt: new Date() })
         .where(eq(resourceServers.audience, resourceId));
-      return { backchannelLogoutUri: uri };
+      return { resourceSecret: secret };
     });
   }
 
@@ -466,6 +514,7 @@ export function createInternalApplicationService(db: Database, issuer: string, i
       const { row, metadata } = await accessible(clientId, actor, applicationPermissions.resources, tx);
       const [created] = await tx.insert(resourceServers).values({
         audience: input.resourceId, name: input.name, scopes: unique(input.availableScopes), createdBy: actor.id,
+        secretHash: await hashNewResourceSecret(),
       }).onConflictDoNothing().returning({ audience: resourceServers.audience });
       if (!created) throw new InternalApplicationError(409, "conflict", "Resource already exists");
       await tx.update(oidcClients).set({
@@ -618,7 +667,8 @@ export function createInternalApplicationService(db: Database, issuer: string, i
     rotateSecret, removeSecret, addOwner, updateOwner, removeOwner, attachResource, createResource,
     updateResource, removeResource, updateScopes, createPermission, updatePermission,
     deletePermission, updateDefaultPermissions, updateRedirectUris, listResources, resourceDetail,
-    updateResourceScope, setResourceLogoutUri, deleteResource,
+    updateResourceScope, setResourceLogoutUri, rotateResourceSecret, deleteResource,
+    validateBackchannel: backchannel.validate, reconcileConfiguredLogoutUri,
   };
 }
 

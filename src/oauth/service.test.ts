@@ -263,7 +263,12 @@ describe("authorization resource check", () => {
     ).rejects.toThrow('Resource server "urn:basis:api:missing" is not registered');
   });
 
-  it("allows public OIDC scopes without adding them to the client or resource", async () => {
+  it.each([
+    ["https://api.example.test/logout", true],
+    ["http://localhost:4321/logout", true],
+    [null, false],
+    ["http://api.example.test/logout", false],
+  ] as const)("checks the logout URL %s even for public OIDC scopes", async (backchannelLogoutUri, allowed) => {
     const publicScopeClient = {
       ...clientRow,
       resources: ["urn:basis:api:test"],
@@ -275,7 +280,7 @@ describe("authorization resource check", () => {
         from: (table: unknown) => table === oidcClientOrganizations ? organizationQuery() : ({
           where: () => ({
             limit: () => table === resourceServers
-              ? [{ audience: "urn:basis:api:test", scopes: [] }]
+              ? [{ audience: "urn:basis:api:test", scopes: [], backchannelLogoutUri }]
               : { prepare: () => ({ execute: clientExecute }) },
           }),
         }),
@@ -289,20 +294,23 @@ describe("authorization resource check", () => {
       {} as IdentityService,
     );
 
-    await expect(
-      publicScopeService.startAuthorization({
-        initialUri: "/oauth/authorize?client_id=client-1",
-        clientId: "client-1",
-        redirectUri: "https://portal.example.test/callback",
-        responseType: "code",
-        scope: "openid profile email offline_access",
-        resources: ["urn:basis:api:test"],
-        state: "state",
-        nonce: "nonce",
-        codeChallenge: "a".repeat(43),
-        codeChallengeMethod: "S256",
-      }),
-    ).resolves.toMatchObject({ interactionToken: expect.any(String) });
+    const authorization = publicScopeService.startAuthorization({
+      initialUri: "/oauth/authorize?client_id=client-1",
+      clientId: "client-1",
+      redirectUri: "https://portal.example.test/callback",
+      responseType: "code",
+      scope: "openid profile email offline_access",
+      resources: ["urn:basis:api:test"],
+      state: "state",
+      nonce: "nonce",
+      codeChallenge: "a".repeat(43),
+      codeChallengeMethod: "S256",
+    });
+    if (allowed) {
+      await expect(authorization).resolves.toMatchObject({ interactionToken: expect.any(String) });
+    } else {
+      await expect(authorization).rejects.toMatchObject({ status: 400, error: "invalid_resource", code: 14408 });
+    }
   });
 
   it("rejects an existing session when the client filter blocks its email", async () => {
@@ -319,7 +327,7 @@ describe("authorization resource check", () => {
         from: (table: unknown) => table === oidcClientOrganizations ? organizationQuery() : ({
           where: () => ({
             limit: () => table === resourceServers
-              ? [{ audience: "urn:basis:api:test", scopes: [] }]
+              ? [{ audience: "urn:basis:api:test", scopes: [], backchannelLogoutUri: "https://api.example.test/logout" }]
               : { prepare: () => ({ execute: clientExecute }) },
           }),
         }),
@@ -372,7 +380,7 @@ describe("authorization resource check", () => {
         from: (table: unknown) => table === oidcClientOrganizations ? organizationQuery() : ({
           where: () => ({
             limit: () => table === resourceServers
-              ? [{ audience: "urn:basis:api:test", scopes: [] }]
+              ? [{ audience: "urn:basis:api:test", scopes: [], backchannelLogoutUri: "https://api.example.test/logout" }]
               : { prepare: () => ({ execute: clientExecute }) },
           }),
         }),

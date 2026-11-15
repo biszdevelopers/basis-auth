@@ -134,6 +134,20 @@
       "when": 1794736525137,
       "tag": "0018_portal-scoped-permissions",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1794739529975,
+      "tag": "0019_resource-secrets",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1794742400085,
+      "tag": "0020_backchannel-verifications",
+      "breakpoints": true
     }
   ]
 }

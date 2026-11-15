@@ -177,10 +177,19 @@ export const resourceServers = pgTable("resource_servers", {
   audience: text("audience").primaryKey(),
   name: text("name").notNull(),
   scopes: jsonb("scopes").notNull().$type<string[]>(),
+  secretHash: text("secret_hash").notNull(),
   createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
   backchannelLogoutUri: text("backchannel_logout_uri"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+export const backchannelVerifications = pgTable("backchannel_verifications", {
+  nonce: text("nonce").primaryKey(),
+  audience: text("audience").notNull().references(() => resourceServers.audience, { onDelete: "cascade" }),
+  challenge: text("challenge").notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  validatedAt: timestamp("validated_at", { withTimezone: true }),
+}, (table) => [index("backchannel_verifications_expires_at_idx").on(table.expiresAt)]);
 
 export const authSessions = pgTable(
   "auth_sessions",

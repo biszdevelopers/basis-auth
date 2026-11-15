@@ -4,7 +4,6 @@ import { clientInputSchema, loadConfig } from "./config.js";
 const base = {
   NODE_ENV: "test",
   DATABASE_URL: "postgresql://test:test@localhost/test",
-  INTERNAL_API_TOKEN: "a".repeat(32),
   MANAGEMENT_PORTAL_CLIENT_ID: "management-portal",
   MANAGEMENT_PORTAL_AUDIENCE: "devconnect://noesis",
   OIDC_ISSUER: "https://auth.example.test/",
@@ -244,10 +243,10 @@ describe("configuration", () => {
     ).rejects.toThrow("must be replaced with real randomly generated values");
   });
 
-  it("rejects placeholder internal API tokens", async () => {
+  it("requires a JSON array of resource audiences for privileged user writes", async () => {
     await expect(
-      loadConfig({ ...base, INTERNAL_API_TOKEN: "replace-with-at-least-32-random-characters" }),
-    ).rejects.toThrow("INTERNAL_API_TOKEN must be replaced");
+      loadConfig({ ...base, INTERNAL_USER_WRITE_RESOURCES_JSON: "{}" }),
+    ).rejects.toThrow("expected array");
   });
 
   it("rejects development mode with a non-localhost issuer", async () => {

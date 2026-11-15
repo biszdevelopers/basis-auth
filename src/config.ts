@@ -112,10 +112,11 @@ export const clientInputSchema = clientBaseSchema
   .omit({ clientId: true })
   .superRefine(validateEphemeralRedirectUris);
 
-export const backchannelLogoutUriSchema = z.url({ protocol: /^https$/ }).refine((value) => {
+export const backchannelLogoutUriSchema = z.url({ protocol: /^https?$/ }).refine((value) => {
   const url = new URL(value);
-  return !url.username && !url.password && !url.href.includes("#");
-}, "Back-channel logout URI must be an HTTPS URL without credentials or a fragment");
+  const allowedTransport = url.protocol === "https:" || url.hostname === "localhost";
+  return allowedTransport && !url.username && !url.password && !url.href.includes("#");
+}, "Back-channel logout URI must use HTTPS or http://localhost, without credentials or a fragment");
 
 export const resourceSchema = z.object({
   audience: z.string().min(1),
@@ -141,7 +142,7 @@ const environmentSchema = z.object({
   DATABASE_URL: z.string().min(1),
   INTERNAL_API_HOST: z.string().min(1).default("127.0.0.1"),
   INTERNAL_API_PORT: z.coerce.number().int().positive().default(3001),
-  INTERNAL_API_TOKEN: z.string().min(32),
+  INTERNAL_USER_WRITE_RESOURCES_JSON: optionalJsonArray,
   MANAGEMENT_PORTAL_CLIENT_ID: z.string().min(1),
   MANAGEMENT_PORTAL_AUDIENCE: z.string().min(1),
   MANAGEMENT_PORTAL_SCOPE: z.string().min(1).default("noesis.access"),
@@ -198,7 +199,7 @@ export interface AppConfig {
   databaseUrl: string;
   internalApiHost: string;
   internalApiPort: number;
-  internalApiToken: string;
+  internalUserWriteResources: string[];
   managementPortalClientId: string;
   managementPortalAudience: string;
   managementPortalScope: string;
@@ -336,9 +337,6 @@ export async function loadConfig(source: NodeJS.ProcessEnv = process.env): Promi
   if (cookieKeys.some((key) => placeholderPattern.test(key))) {
     throw new Error("OIDC_COOKIE_KEYS must be replaced with real randomly generated values");
   }
-  if (placeholderPattern.test(env.INTERNAL_API_TOKEN)) {
-    throw new Error("INTERNAL_API_TOKEN must be replaced with a real randomly generated value");
-  }
   if (env.NODE_ENV === "production" && cookieKeys.length < 2) {
     throw new Error("At least two OIDC cookie keys are required in production");
   }
@@ -353,7 +351,11 @@ export async function loadConfig(source: NodeJS.ProcessEnv = process.env): Promi
     databaseUrl: env.DATABASE_URL,
     internalApiHost: env.INTERNAL_API_HOST,
     internalApiPort: env.INTERNAL_API_PORT,
-    internalApiToken: env.INTERNAL_API_TOKEN,
+    internalUserWriteResources: parseJson(
+      "INTERNAL_USER_WRITE_RESOURCES_JSON",
+      env.INTERNAL_USER_WRITE_RESOURCES_JSON,
+      z.array(z.string().min(1)),
+    ),
     managementPortalClientId: env.MANAGEMENT_PORTAL_CLIENT_ID,
     managementPortalAudience: env.MANAGEMENT_PORTAL_AUDIENCE,
     managementPortalScope: env.MANAGEMENT_PORTAL_SCOPE,

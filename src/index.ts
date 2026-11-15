@@ -14,7 +14,8 @@ import { createOAuthService } from "./oauth/service.js";
 import { createSessionService } from "./oauth/sessions.js";
 import { createInternalUserService } from "./internal/users.js";
 import { createInternalApp } from "./internal/app.js";
-import { createInternalApplicationService } from "./internal/applications.js";
+import { createResourceVerifier } from "./internal/resource-auth.js";
+import { createInternalApplicationService, InternalApplicationError } from "./internal/applications.js";
 import { serverIdentity } from "./serverIdentity.js";
 
 const config = await loadConfig();
@@ -44,7 +45,10 @@ const microsoft = createMicrosoftService(config, db, identity);
 const internalUsers = createInternalUserService(db, emailDomains);
 const internalApplications = createInternalApplicationService(db, config.issuer, oauth.invalidateClient);
 const app = createApp(config, oauth, keys, sessions, identity, microsoft);
-const internalApp = createInternalApp(config.internalApiToken, internalUsers, {
+const internalApp = createInternalApp({
+  verifyResource: createResourceVerifier(db),
+  userWriteResources: config.internalUserWriteResources,
+}, internalUsers, {
   applications: internalApplications,
   keys,
   clientId: config.managementPortalClientId,
@@ -60,10 +64,23 @@ const server = serve({ fetch: app.fetch, port: config.port }, () => {
 });
 const internalServer = serve(
   { fetch: internalApp.fetch, hostname: config.internalApiHost, port: config.internalApiPort },
-  () => console.log(
-    `basis-auth internal API listening on http://${config.internalApiHost}:${config.internalApiPort} (pid ${process.pid})`,
-  ),
+  () => {
+    console.log(`basis-auth internal API listening on http://${config.internalApiHost}:${config.internalApiPort} (pid ${process.pid})`);
+    void reconcileConfiguredLogoutUris();
+  },
 );
+
+async function reconcileConfiguredLogoutUris() {
+  for (const resource of config.resources) {
+    if (!resource.backchannelLogoutUri) continue;
+    try {
+      await internalApplications.reconcileConfiguredLogoutUri(resource.audience, resource.backchannelLogoutUri);
+    } catch (error) {
+      const reason = error instanceof InternalApplicationError ? error.message : "Verification could not be completed";
+      console.warn("Configured logout webhook was not saved", resource.audience, reason);
+    }
+  }
+}
 
 async function shutdown(signal: string) {
   console.log(`Received ${signal}; shutting down`);

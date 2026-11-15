@@ -14,6 +14,7 @@ import {
 import { createDatabase, type Database } from "../src/database/client.js";
 import {
   hashClientSecret,
+  hashNewResourceSecret,
   seedConfiguration,
   syncPermissionCatalog,
   type ClientOwner,
@@ -159,7 +160,10 @@ export async function ensureResourcesRegistered(
   for (const reg of missing) {
     await db
       .insert(resourceServers)
-      .values({ audience: reg.audience, name: reg.audience, scopes: reg.scopes })
+      .values({
+        audience: reg.audience, name: reg.audience, scopes: reg.scopes,
+        secretHash: await hashNewResourceSecret(),
+      })
       .onConflictDoNothing({ target: resourceServers.audience });
   }
   return missing.map((reg) => reg.audience);

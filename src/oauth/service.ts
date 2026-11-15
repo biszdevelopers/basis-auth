@@ -1,6 +1,7 @@
 import { and, eq, gt, isNull, sql } from "drizzle-orm";
 import {
   EPHEMERAL_LOCALHOST_REDIRECT_PREFIX,
+  backchannelLogoutUriSchema,
   isEphemeralLocalhostRedirectUri,
   type AppConfig,
 } from "../config.js";
@@ -37,6 +38,30 @@ import { scopesCover } from "./scopes.js";
 // API capability granted by a particular resource server.
 const publicScopes = new Set(["openid", "profile", "email", "offline_access"]);
 const identityScopes = publicScopes;
+
+async function requireLoginResource(database: Pick<Database, "select">, audience: string) {
+  const [resource] = await database.select({
+    scopes: resourceServers.scopes,
+    backchannelLogoutUri: resourceServers.backchannelLogoutUri,
+  }).from(resourceServers).where(eq(resourceServers.audience, audience)).limit(1);
+  if (!resource) {
+    throw new OAuthError(
+      "invalid_target",
+      `Resource server "${audience}" is not registered; add it with "bun run clients" or OIDC_RESOURCES_JSON`,
+      400,
+      14407,
+    );
+  }
+  if (!backchannelLogoutUriSchema.safeParse(resource.backchannelLogoutUri).success) {
+    throw new OAuthError(
+      "invalid_resource",
+      `Resource server "${audience}" requires a valid backchannel logout URL`,
+      400,
+      14408,
+    );
+  }
+  return resource;
+}
 
 export interface OAuthClient {
   clientId: string;
@@ -223,19 +248,7 @@ export function createOAuthService(
     if (!scopesCover(allowedScopes, resourceScopes)) {
       throw new OAuthError("invalid_scope", "The client is not allowed to request one or more scopes for this resource", 400, 14401);
     }
-    const [resourceServer] = await db
-      .select()
-      .from(resourceServers)
-      .where(eq(resourceServers.audience, resource))
-      .limit(1);
-    if (!resourceServer) {
-      throw new OAuthError(
-        "invalid_target",
-        `Resource server "${resource}" is not registered; add it with "bun run clients" or OIDC_RESOURCES_JSON`,
-        400,
-        14407,
-      );
-    }
+    const resourceServer = await requireLoginResource(db, resource);
     const customScopes = scopes.filter((scope) => !identityScopes.has(scope));
     if (!scopesCover(resourceServer.scopes, customScopes)) {
       throw new OAuthError("invalid_scope", "A requested scope is not supported by the resource", 400, 14401);
@@ -414,6 +427,7 @@ export function createOAuthService(
       if (!claimed?.userId || !claimed.authenticatedAt) {
         throw new OAuthError("invalid_request", "Authorization request is not ready");
       }
+      await requireLoginResource(tx, claimed.resource);
       await tx.insert(authorizationCodes).values({
         codeHash,
         requestId: claimed.id,
@@ -538,6 +552,10 @@ export function createOAuthService(
     ) {
       throw new OAuthError("invalid_grant", "Authorization code exchange failed");
     }
+    if (authorizationCode.consumedAt) {
+      throw new OAuthError("invalid_grant", "Authorization code was already used");
+    }
+    await requireLoginResource(db, authorizationCode.resource);
     const consumed = await db
       .update(authorizationCodes)
       .set({ consumedAt: new Date() })

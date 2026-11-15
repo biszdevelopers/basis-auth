@@ -20,6 +20,14 @@ export async function hashClientSecret(secret: string): Promise<string> {
   return `scrypt:${salt.toString("base64url")}:${digest.toString("base64url")}`;
 }
 
+export function generateSecret() {
+  return `sk-${randomBytes(32).toString("base64url")}`;
+}
+
+export function hashNewResourceSecret() {
+  return hashClientSecret(generateSecret());
+}
+
 export async function secretMatches(secret: string, encoded: string | null): Promise<boolean> {
   if (!encoded) return false;
   const [algorithm, saltValue, digestValue] = encoded.split(":");
@@ -95,11 +103,16 @@ export async function seedConfiguration(
     const settings = {
       name: resource.name ?? resource.audience,
       scopes: resource.scopes,
-      backchannelLogoutUri: resource.backchannelLogoutUri,
+      backchannelLogoutUri: resource.backchannelLogoutUri === null ? null : undefined,
     };
     await db
       .insert(resourceServers)
-      .values({ audience: resource.audience, createdBy: root?.id, ...settings })
+      .values({
+        audience: resource.audience,
+        createdBy: root?.id,
+        secretHash: await hashNewResourceSecret(),
+        ...settings,
+      })
       .onConflictDoUpdate({
         target: resourceServers.audience,
         set: { ...settings, updatedAt: new Date() },

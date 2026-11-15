@@ -1,4 +1,3 @@
-import { timingSafeEqual } from "node:crypto";
 import { DelegatedPermissionSet, type Permission } from "@basis/schema/permissions";
 import { Hono, type Context } from "hono";
 import { secureHeaders } from "hono/secure-headers";
@@ -21,23 +20,38 @@ type ManagementOptions = {
   scope: string;
 };
 
+type InternalEnvironment = { Variables: { resourceAudience: string; resourceSecret: string } };
+type ResourceAuthentication = {
+  verifyResource: (audience: string, secret: string) => Promise<boolean>;
+  userWriteResources?: readonly string[];
+};
+
+function decodeResourceAudience(value: string | undefined) {
+  try {
+    return value ? decodeURIComponent(value) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function createInternalApp(
-  token: string,
+  authentication: ResourceAuthentication,
   users: InternalUserService,
   management?: ManagementOptions,
   executeLogout?: ReturnType<typeof createLogoutService>,
 ) {
-  const app = new Hono();
+  const app = new Hono<InternalEnvironment>();
+  const userWriteResources = new Set(authentication.userWriteResources);
   app.use("*", secureHeaders());
   app.use("*", async (c, next) => {
-    const supplied = c.req.header("authorization")?.match(/^Bearer ([^\s]+)$/)?.[1];
-    if (!supplied) return c.json({ error: "unauthorized" }, 401);
-    const suppliedBytes = Buffer.from(supplied);
-    const expectedBytes = Buffer.from(token);
-    if (suppliedBytes.length !== expectedBytes.length || !timingSafeEqual(suppliedBytes, expectedBytes)) {
+    c.header("Cache-Control", "no-store");
+    const secret = c.req.header("authorization")?.match(/^Bearer ([!-~]{1,256})$/i)?.[1];
+    const audience = decodeResourceAudience(c.req.header("x-basis-resource"));
+    if (!secret || !audience || !(await authentication.verifyResource(audience, secret))) {
       return c.json({ error: "unauthorized" }, 401);
     }
-    c.header("Cache-Control", "no-store");
+    c.set("resourceAudience", audience);
+    c.set("resourceSecret", secret);
     await next();
   });
 
@@ -68,6 +82,7 @@ export function createInternalApp(
   });
 
   app.patch("/internal/users/:userId", async (c) => {
+    if (!userWriteResources.has(c.get("resourceAudience"))) return c.json({ error: "forbidden" }, 403);
     let body: unknown;
     try {
       body = await c.req.json();
@@ -89,6 +104,7 @@ export function createInternalApp(
     app.post("/internal/users/:userId/logout", async (c) => {
       const request = logoutRequestSchema.safeParse(await c.req.json<unknown>().catch(() => null));
       if (!request.success) return c.json({ error: "invalid_request", message: "A resource audience is required" }, 400);
+      if (request.data.audience !== c.get("resourceAudience")) return c.json({ error: "forbidden" }, 403);
       let user;
       try {
         user = await users.findUser(c.req.param("userId"));
@@ -109,8 +125,11 @@ export function createInternalApp(
     });
   }
 
-  async function actor(c: Context): Promise<ApplicationActor> {
+  async function actor(c: Context<InternalEnvironment>): Promise<ApplicationActor> {
     if (!management) throw new InternalApplicationError(404, "not_found", "Application management is unavailable");
+    if (c.get("resourceAudience") !== management.audience) {
+      throw new InternalApplicationError(403, "forbidden", "Portal resource credentials are required");
+    }
     const value = c.req.header("x-basis-actor-token")?.match(/^Bearer ([^\s]+)$/)?.[1];
     if (!value) throw new InternalApplicationError(403, "forbidden", "Actor token is required");
     try {
@@ -125,7 +144,7 @@ export function createInternalApp(
     }
   }
 
-  async function managed(c: Context, operation: (actor: ApplicationActor) => Promise<unknown>) {
+  async function managed(c: Context<InternalEnvironment>, operation: (actor: ApplicationActor) => Promise<unknown>) {
     try {
       return c.json(await operation(await actor(c)) as never);
     } catch (error) {
@@ -179,7 +198,25 @@ export function createInternalApp(
       z.object({ action: z.literal("remove"), scope: z.string().min(1) }),
     ]);
     const logoutUriSchema = z.object({ backchannelLogoutUri: backchannelLogoutUriSchema });
+    const backchannelValidationSchema = z.object({
+      nonce: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+      challenge_hash: z.string().regex(/^[a-f\d]{64}$/i),
+    });
 
+    app.post("/internal/backchannel/validate", async (c) => {
+      const contentType = c.req.header("content-type") ?? "";
+      const body = await (contentType.startsWith("application/x-www-form-urlencoded")
+        ? c.req.parseBody()
+        : c.req.json<unknown>()).catch(() => null);
+      const proof = backchannelValidationSchema.safeParse(body);
+      if (!proof.success) return c.json({ error: "invalid_request" }, 400);
+      const result = await management.applications.validateBackchannel(
+        c.get("resourceAudience"), c.get("resourceSecret"), proof.data.nonce, proof.data.challenge_hash,
+      );
+      if (result === "timeout") return c.json({ error: "timeout" }, 408);
+      if (result !== "verified") return c.json({ error: "invalid_request" }, 400);
+      return c.json({ status: "successful" });
+    });
     app.get("/internal/resources", (c) => managed(c, async (who) => ({
       resources: await management.applications.listResources(who),
     })));
@@ -191,6 +228,9 @@ export function createInternalApp(
         c.req.param("resourceId"), who, resourceScopeChangeSchema.parse(await c.req.json()),
       ),
     })));
+    app.post("/internal/resources/:resourceId/secret/rotate", (c) => managed(c, (who) =>
+      management.applications.rotateResourceSecret(c.req.param("resourceId"), who),
+    ));
     app.get("/internal/resources/:resourceId/backchannel/logout", (c) => managed(c, async (who) => {
       const { backchannelLogoutUri } = await management.applications.resourceDetail(c.req.param("resourceId"), who);
       return { backchannelLogoutUri };

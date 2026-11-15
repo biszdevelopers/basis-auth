@@ -1,4 +1,5 @@
 import { beforeAll, afterAll, describe, expect, it, vi } from "vitest";
+import { createHmac } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { loadConfig, type AppConfig } from "../config.js";
 import { createDatabase, type Database } from "../database/client.js";
@@ -19,6 +20,10 @@ import {
 } from "../database/schema.js";
 import { createIdentityService, type IdentityService } from "../identity.js";
 import { createInternalApplicationService } from "../internal/applications.js";
+import { createInternalApp } from "../internal/app.js";
+import { createBackchannelVerifier } from "../internal/backchannel.js";
+import { createInternalUserService } from "../internal/users.js";
+import { createResourceVerifier } from "../internal/resource-auth.js";
 import { portalScopedDefaults } from "../internal/portal-permissions.js";
 import { createKeyService, type KeyService } from "./keys.js";
 import { createLogoutService } from "./logout.js";
@@ -43,7 +48,6 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
     config = await loadConfig({
       NODE_ENV: "test",
       DATABASE_URL: databaseUrl,
-      INTERNAL_API_TOKEN: "i".repeat(32),
       MANAGEMENT_PORTAL_CLIENT_ID: "portal",
       MANAGEMENT_PORTAL_AUDIENCE: "devconnect://noesis",
       OIDC_ISSUER: "https://auth.example.test",
@@ -96,12 +100,22 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
     await close?.();
   });
 
-  it("persists, preserves, and clears a configured resource logout callback", async () => {
+  it("verifies a configured webhook before saving it and preserves it unless explicitly cleared", async () => {
     const resource = { audience: "urn:basis:api:logout-test", scopes: [] };
     const uri = "https://projects.example.test/logout";
     const loadResource = () => db.select().from(resourceServers).where(eq(resourceServers.audience, resource.audience));
+    const verifyDestination = vi.fn().mockResolvedValueOnce("rejected").mockResolvedValueOnce("verified");
+    const applications = createInternalApplicationService(db, config.issuer, oauth.invalidateClient, {
+      verifyDestination, validate: vi.fn(),
+    });
 
     await seedConfiguration(db, [], [{ ...resource, backchannelLogoutUri: uri }]);
+    await expect(loadResource()).resolves.toEqual([expect.objectContaining({ backchannelLogoutUri: null })]);
+    await expect(applications.reconcileConfiguredLogoutUri(resource.audience, uri)).rejects.toMatchObject({ status: 502 });
+    await expect(loadResource()).resolves.toEqual([expect.objectContaining({ backchannelLogoutUri: null })]);
+    await applications.reconcileConfiguredLogoutUri(resource.audience, uri);
+    await applications.reconcileConfiguredLogoutUri(resource.audience, uri);
+    expect(verifyDestination).toHaveBeenCalledTimes(2);
     await seedConfiguration(db, [], [resource]);
     await expect(loadResource()).resolves.toEqual([expect.objectContaining({ backchannelLogoutUri: uri })]);
     await seedConfiguration(db, [], [{ ...resource, backchannelLogoutUri: null }]);
@@ -115,7 +129,8 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
     await db.insert(users).values(ids.map((id) => ({
       id, provider: "resource-integration", upstreamIssuer: "test", upstreamSubject: id, email: `${id}@example.test`,
     })));
-    const applications = createInternalApplicationService(db, config.issuer, oauth.invalidateClient);
+    const backchannel = createBackchannelVerifier(db, 1000);
+    const applications = createInternalApplicationService(db, config.issuer, oauth.invalidateClient, backchannel);
     const owner = {
       id: ownerId,
       permissions: [
@@ -145,7 +160,7 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
     };
     const ownResource = { id: ownerId, permissions: othersOnly.permissions };
     const resourceWildcard = { id: otherId, permissions: ["BiszPortal.Resources.all"] };
-    const logoutUri = "https://resource.example.test/logout";
+    const logoutUri = "http://localhost:4321/logout";
 
     try {
       await expect(applications.list(othersOnly)).resolves.toContainEqual(expect.objectContaining({ clientId }));
@@ -160,6 +175,20 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
         .rejects.toMatchObject({ status: 403 });
       await expect(applications.listResources({ id: ownerId, permissions: [] })).rejects.toMatchObject({ status: 403 });
 
+      const verifyResource = createResourceVerifier(db);
+      await expect(verifyResource(resourceId, "sk-1")).resolves.toBe(false);
+      const { resourceSecret: oldSecret } = await applications.rotateResourceSecret(resourceId, owner);
+      await expect(verifyResource(resourceId, oldSecret)).resolves.toBe(true);
+      await expect(applications.rotateResourceSecret(resourceId, othersOnly)).rejects.toMatchObject({ status: 403 });
+      const { resourceSecret: newSecret } = await applications.rotateResourceSecret(resourceId, owner);
+      expect(newSecret).toMatch(/^sk-[A-Za-z0-9_-]{43}$/);
+      const [stored] = await db.select({ secretHash: resourceServers.secretHash }).from(resourceServers)
+        .where(eq(resourceServers.audience, resourceId));
+      expect(stored?.secretHash).toMatch(/^scrypt:/);
+      await expect(verifyResource(resourceId, oldSecret)).resolves.toBe(false);
+      await expect(verifyResource(resourceId, newSecret)).resolves.toBe(true);
+      await expect(applications.resourceDetail(resourceId, owner)).resolves.not.toHaveProperty("resourceSecret");
+
       await applications.updateResourceScope(resourceId, owner, { action: "add", scope: "test.read" });
       await applications.updateResourceScope(resourceId, owner, { action: "add", scope: "test.all" });
       await applications.updateScopes(clientId, owner, { [resourceId]: ["test.read"] });
@@ -170,13 +199,60 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
       await expect(applications.updateResourceScope(resourceId, owner, { action: "remove", scope: "test.read" }))
         .resolves.toMatchObject({ availableScopes: ["test.all"] });
 
-      await applications.setResourceLogoutUri(resourceId, owner, "https://resource.example.test/old-logout");
-      await applications.setResourceLogoutUri(resourceId, resourceWildcard, logoutUri);
-      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(null, { status: 204 }));
+      const internalApp = createInternalApp({ verifyResource }, createInternalUserService(db, emailDomains), {
+        applications, keys, clientId: "portal", audience: config.managementPortalAudience, scope: config.managementPortalScope,
+      });
+      const fetch = vi.fn<typeof globalThis.fetch>();
       vi.stubGlobal("fetch", fetch);
+      const validate = (nonce: string, hash: string, secret = newSecret) =>
+        internalApp.request("/internal/backchannel/validate", {
+          method: "POST",
+          headers: { authorization: `Bearer ${secret}`, "x-basis-resource": encodeURIComponent(resourceId) },
+          body: new URLSearchParams({ nonce, challenge_hash: hash }),
+        });
+      const proof = () => {
+        const params = fetch.mock.lastCall?.[1]?.body as URLSearchParams;
+        return {
+          nonce: params.get("nonce")!,
+          hash: createHmac("sha256", newSecret).update(params.get("challenge")!).digest("hex"),
+        };
+      };
+      fetch.mockResolvedValueOnce(new Response(null, { status: 202 }));
+      const saving = applications.setResourceLogoutUri(resourceId, resourceWildcard, logoutUri);
+      await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+      expect(fetch).toHaveBeenCalledWith(logoutUri, expect.objectContaining({
+        method: "POST", redirect: "error",
+      }));
+      expect((fetch.mock.lastCall?.[1]?.body as URLSearchParams).get("action")).toBe("test");
+      await expect(applications.resourceDetail(resourceId, owner)).resolves.toMatchObject({ backchannelLogoutUri: null });
+      const { nonce, hash } = proof();
+      expect((await validate(nonce, hash, oldSecret)).status).toBe(401);
+      expect((await validate(nonce, "0".repeat(64))).status).toBe(400);
+      expect(await backchannel.validate("wrong-audience", newSecret, nonce, hash)).toBe("invalid");
+      const validation = await validate(nonce, hash);
+      expect(validation.status).toBe(200);
+      expect(await validation.json()).toEqual({ status: "successful" });
+      await expect(saving).resolves.toEqual({ backchannelLogoutUri: logoutUri });
+      expect((await validate(nonce, hash)).status).toBe(400);
+
+      const changedUri = "https://resource.example.test/replacement";
+      fetch.mockResolvedValueOnce(new Response(null, { status: 200 }));
+      await expect(applications.setResourceLogoutUri(resourceId, owner, changedUri))
+        .rejects.toMatchObject({ status: 502, code: "backchannel_test_failed" });
+      fetch.mockResolvedValueOnce(new Response(null, { status: 202 }));
+      await expect(applications.setResourceLogoutUri(resourceId, owner, changedUri))
+        .rejects.toMatchObject({ status: 504, code: "backchannel_timeout" });
+      const expired = proof();
+      const timeout = await validate(expired.nonce, expired.hash);
+      expect(timeout.status).toBe(408);
+      expect(await timeout.json()).toEqual({ error: "timeout" });
+
+      fetch.mockResolvedValueOnce(new Response(null, { status: 204 }));
       const logout = createLogoutService(db, { issueLogoutToken: vi.fn().mockResolvedValue("signed-token") });
       await expect(logout(ownerId, resourceId)).resolves.toBe("delivered");
-      expect(fetch).toHaveBeenCalledWith(logoutUri, expect.objectContaining({ method: "POST" }));
+      expect(fetch).toHaveBeenLastCalledWith(logoutUri, expect.objectContaining({
+        method: "POST", body: new URLSearchParams({ logout_token: "signed-token" }),
+      }));
       await applications.setResourceLogoutUri(resourceId, owner, null);
       await expect(logout(ownerId, resourceId)).resolves.toBe("logout_not_configured");
 
@@ -284,6 +360,12 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
   });
 
   it("issues audience-bound tokens, rejects code replay, and detects refresh reuse", async () => {
+    const resourceAudience = "urn:basis:api:projects";
+    const logoutUri = "https://projects.example.test/logout";
+    const setLogoutUri = (backchannelLogoutUri: string | null) =>
+      db.update(resourceServers).set({ backchannelLogoutUri })
+        .where(eq(resourceServers.audience, resourceAudience));
+    await setLogoutUri(logoutUri);
     const user = await identity.upsertFromMicrosoft({
       provider: "basischina-microsoft",
       issuer: "https://login.microsoftonline.com/tenant/v2.0",
@@ -305,15 +387,24 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
       codeChallengeMethod: "S256",
       session: { userId: user.id, authenticatedAt: new Date() },
     });
+    await setLogoutUri(null);
+    await expect(oauth.completeAuthorization(started.id))
+      .rejects.toMatchObject({ error: "invalid_resource", code: 14408 });
+    await setLogoutUri(logoutUri);
     const redirect = new URL(await oauth.completeAuthorization(started.id));
     const code = redirect.searchParams.get("code")!;
-    const tokens = await oauth.exchangeAuthorizationCode({
+    const exchangeRequest = {
       code,
       clientId: "portal",
       clientSecret: "portal-secret-long-enough",
       redirectUri: "https://portal.example.test/callback",
       codeVerifier: verifier,
-    });
+    };
+    await setLogoutUri(null);
+    await expect(oauth.exchangeAuthorizationCode(exchangeRequest))
+      .rejects.toMatchObject({ error: "invalid_resource", code: 14408 });
+    await setLogoutUri(logoutUri);
+    const tokens = await oauth.exchangeAuthorizationCode(exchangeRequest);
     const access = await keys.verifyAccessToken(String(tokens.access_token));
     const expectedPortalPermissions = ["nethack.Projects.read", ...portalScopedDefaults].sort();
     expect(access).toMatchObject({
