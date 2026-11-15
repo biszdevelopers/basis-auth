@@ -83,6 +83,26 @@ describe("protocol metadata", () => {
   });
 });
 
+it("returns the same UserInfo error for missing and rejected access tokens", async () => {
+  const userInfo = vi.fn().mockRejectedValue(new OAuthError("invalid_token", "Access token has been revoked", 401));
+  const userInfoApp = createApp(
+    config,
+    { userInfo } as unknown as OAuthService,
+    {} as KeyService,
+    {} as SessionService,
+    {} as IdentityService,
+    {} as MicrosoftService,
+  );
+  const missing = await userInfoApp.request("/oauth/userinfo");
+  const rejected = await userInfoApp.request("/oauth/userinfo", { headers: { authorization: "Bearer rejected" } });
+  expect([missing.status, rejected.status]).toEqual([401, 401]);
+  expect(missing.headers.get("www-authenticate")).toBe('Bearer error="invalid_token"');
+  expect(rejected.headers.get("www-authenticate")).toBe(missing.headers.get("www-authenticate"));
+  const body = await missing.json();
+  expect(body).toMatchObject({ error: "invalid_token", error_description: "Invalid access token" });
+  expect(await rejected.json()).toEqual(body);
+});
+
 describe("root placeholder", () => {
   it("renders the shared Barry error page", async () => {
     const response = await app.request("/");

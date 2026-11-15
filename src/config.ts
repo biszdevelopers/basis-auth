@@ -147,6 +147,7 @@ const environmentSchema = z.object({
   MANAGEMENT_PORTAL_AUDIENCE: z.string().min(1),
   MANAGEMENT_PORTAL_SCOPE: z.string().min(1).default("noesis.access"),
   ACCESS_TOKEN_LIFETIME_MS: z.coerce.number().int().positive().multipleOf(1000).default(60 * 60 * 1000),
+  ACCESS_TOKEN_REVOCATION_GRACE_SECONDS: z.coerce.number().int().nonnegative().default(0),
   OIDC_ISSUER: z.url().transform((issuer) => issuer.replace(/\/$/, "")),
   OIDC_COOKIE_KEYS: z.string().min(32),
   OIDC_JWKS_JSON: z.string().optional(),
@@ -204,6 +205,7 @@ export interface AppConfig {
   managementPortalAudience: string;
   managementPortalScope: string;
   accessTokenLifetimeSeconds: number;
+  accessTokenRevocationGraceSeconds: number;
   issuer: string;
   cookieKeys: string[];
   jwks: { keys: JWK[] };
@@ -360,6 +362,7 @@ export async function loadConfig(source: NodeJS.ProcessEnv = process.env): Promi
     managementPortalAudience: env.MANAGEMENT_PORTAL_AUDIENCE,
     managementPortalScope: env.MANAGEMENT_PORTAL_SCOPE,
     accessTokenLifetimeSeconds: env.ACCESS_TOKEN_LIFETIME_MS / 1000,
+    accessTokenRevocationGraceSeconds: env.ACCESS_TOKEN_REVOCATION_GRACE_SECONDS,
     issuer: env.OIDC_ISSUER,
     cookieKeys,
     jwks: await loadJwks(env),

@@ -648,6 +648,12 @@ export function createApp(
 
   app.onError((error, c) => {
     if (error instanceof OAuthError) {
+      if (error.error === "invalid_token") {
+        return c.json(new OAuthError("invalid_token", "Invalid access token", 401).toJSON(), 401, {
+          "Cache-Control": "no-store",
+          "WWW-Authenticate": 'Bearer error="invalid_token"',
+        });
+      }
       return c.json(error.toJSON(), error.status as 400);
     }
     log.error(error, "Request failed");

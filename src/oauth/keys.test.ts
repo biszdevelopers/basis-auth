@@ -94,7 +94,7 @@ describe("ID token claims", () => {
 });
 
 describe("access-token user state", () => {
-  it("uses the configured lifetime for user and application access tokens", async () => {
+  it("uses the configured lifetime and opaque JTIs for user and application access tokens", async () => {
     const config = buildConfig();
     config.accessTokenLifetimeSeconds = 42;
     const jwk = await rsaJwk();
@@ -120,7 +120,9 @@ describe("access-token user state", () => {
     for (const token of [userToken, applicationToken]) {
       const claims = decodeJwt(token);
       expect(claims.exp! - claims.iat!).toBe(42);
+      expect(claims.jti).toMatch(/^[A-Za-z0-9_-]{43}$/);
     }
+    expect(decodeJwt(userToken).jti).not.toBe(decodeJwt(applicationToken).jti);
   });
 
   it("issues and verifies client-credentials tokens without a user", async () => {
@@ -162,6 +164,15 @@ describe("access-token user state", () => {
       permissionsFor: async () => ["participant"],
     } as unknown as IdentityService;
     const keys = await createKeyService(config, identity);
+
+    const legacyToken = await keys.issueAccessToken({
+      userId: USER_ID,
+      clientId: "client",
+      scopes: ["user.write.email"],
+      resource: "urn:basis:api:test",
+      jti: crypto.randomUUID(),
+    });
+    await expect(keys.verifyAccessToken(legacyToken)).rejects.toThrow("issued before session JTI tracking");
 
     const token = await keys.issueAccessToken({
       userId: USER_ID,

@@ -255,11 +255,10 @@ export const authorizationCodes = pgTable(
   (table) => [index("authorization_codes_expires_at_idx").on(table.expiresAt)],
 );
 
-export const refreshTokens = pgTable(
-  "refresh_tokens",
+export const authorizationSessions = pgTable(
+  "authorization_sessions",
   {
-    tokenHash: text("token_hash").primaryKey(),
-    familyId: uuid("family_id").notNull(),
+    id: uuid("id").primaryKey(),
     clientId: text("client_id")
       .notNull()
       .references(() => oidcClients.clientId, { onDelete: "cascade" }),
@@ -268,14 +267,48 @@ export const refreshTokens = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     scopes: jsonb("scopes").notNull().$type<string[]>(),
     resource: text("resource").notNull(),
+    authenticatedAt: timestamp("authenticated_at", { withTimezone: true }),
+    accessTokenJti: text("access_token_jti").unique(),
+    accessTokenExpiresAt: timestamp("access_token_expires_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
-    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    refreshExpiresAt: timestamp("refresh_expires_at", { withTimezone: true }),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
   },
   (table) => [
-    index("refresh_tokens_family_id_idx").on(table.familyId),
-    index("refresh_tokens_expires_at_idx").on(table.expiresAt),
+    index("authorization_sessions_user_id_idx").on(table.userId),
+    index("authorization_sessions_client_id_idx").on(table.clientId),
+  ],
+);
+
+export const refreshTokens = pgTable(
+  "refresh_tokens",
+  {
+    tokenHash: text("token_hash").primaryKey(),
+    sessionId: uuid("session_id")
+      .notNull()
+      .references(() => authorizationSessions.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+  },
+  (table) => [
+    index("refresh_tokens_session_id_idx").on(table.sessionId),
+    uniqueIndex("refresh_tokens_current_session_idx").on(table.sessionId).where(sql`${table.consumedAt} is null`),
+  ],
+);
+
+export const accessTokenRevocations = pgTable(
+  "access_token_revocations",
+  {
+    jti: text("jti").primaryKey(),
+    audience: text("audience").notNull(),
+    validAfter: timestamp("valid_after", { withTimezone: true }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+  },
+  (table) => [
+    index("access_token_revocations_pending_idx").on(table.nextAttemptAt).where(sql`${table.deliveredAt} is null`),
+    index("access_token_revocations_expires_at_idx").on(table.expiresAt),
   ],
 );
 

@@ -27,6 +27,7 @@ describe("configuration", () => {
     const config = await loadConfig(base);
     expect(config.issuer).toBe("https://auth.example.test");
     expect(config.accessTokenLifetimeSeconds).toBe(3600);
+    expect(config.accessTokenRevocationGraceSeconds).toBe(0);
     expect(config.clients[0]?.clientId).toBe("test-client");
     expect(config.clients[0]?.organizationIds).toEqual(["cbc6e1e2-a6bb-4002-bbdc-6da892a051a7"]);
     expect(config.jwks.keys[0]?.d).toBeTypeOf("string");
@@ -37,6 +38,13 @@ describe("configuration", () => {
     expect(config.accessTokenLifetimeSeconds).toBe(42);
 
     await expect(loadConfig({ ...base, ACCESS_TOKEN_LIFETIME_MS: "1500" })).rejects.toThrow();
+  });
+
+  it("accepts a nonnegative whole-second access token revocation grace period", async () => {
+    const config = await loadConfig({ ...base, ACCESS_TOKEN_REVOCATION_GRACE_SECONDS: "30" });
+    expect(config.accessTokenRevocationGraceSeconds).toBe(30);
+    await expect(loadConfig({ ...base, ACCESS_TOKEN_REVOCATION_GRACE_SECONDS: "-1" })).rejects.toThrow();
+    await expect(loadConfig({ ...base, ACCESS_TOKEN_REVOCATION_GRACE_SECONDS: "0.5" })).rejects.toThrow();
   });
 
   it("validates non-empty, unique client organization IDs", async () => {

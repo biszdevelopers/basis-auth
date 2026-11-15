@@ -12,7 +12,10 @@ import {
 } from "jose";
 import { z } from "zod";
 import type { AppConfig } from "../config.js";
+import type { Database } from "../database/client.js";
 import type { IdentityService } from "../identity.js";
+import { isAccessTokenRevoked } from "./access-token-revocations.js";
+import { randomToken } from "./crypto.js";
 
 const privateFields = new Set(["d", "p", "q", "dp", "dq", "qi", "oth", "k"]);
 const basisAuthAccessTokenClaimsSchema = accessTokenClaimsSchema
@@ -39,7 +42,7 @@ export type AccessTokenClaims = Pick<
 type UserState = { id: string; disabled: boolean; tokensValidAfter: Date | null };
 type Account = Awaited<ReturnType<IdentityService["findAccount"]>>;
 
-export async function createKeyService(config: AppConfig, identity: IdentityService) {
+export async function createKeyService(config: AppConfig, identity: IdentityService, db?: Pick<Database, "select">) {
   const signingJwk = config.jwks.keys[0];
   if (!signingJwk?.d || signingJwk.kty !== "RSA") {
     throw new Error("The first OIDC signing JWK must be a private RSA key");
@@ -56,6 +59,7 @@ export async function createKeyService(config: AppConfig, identity: IdentityServ
       scopes: string[];
       resource?: string;
       grantType?: "authorization_code" | "refresh_token";
+      jti?: string;
     },
     preloaded?: { user?: UserState; permissions?: string[] },
   ) {
@@ -75,7 +79,7 @@ export async function createKeyService(config: AppConfig, identity: IdentityServ
       .setSubject(input.userId);
     if (input.resource) token.setAudience(input.resource);
     return token
-      .setJti(crypto.randomUUID())
+      .setJti(input.jti ?? randomToken())
       .setIssuedAt()
       .setExpirationTime(`${config.accessTokenLifetimeSeconds}s`)
       .sign(signingKey);
@@ -96,7 +100,7 @@ export async function createKeyService(config: AppConfig, identity: IdentityServ
       .setIssuer(config.issuer)
       .setSubject(input.clientId)
       .setAudience(input.resource)
-      .setJti(crypto.randomUUID())
+      .setJti(randomToken())
       .setIssuedAt()
       .setExpirationTime(`${config.accessTokenLifetimeSeconds}s`)
       .sign(signingKey);
@@ -144,7 +148,21 @@ export async function createKeyService(config: AppConfig, identity: IdentityServ
       .sign(signingKey);
   }
 
-  async function verifyAccessToken(token: string, audience?: string) {
+  async function issueAccessTokenRevocation(input: { audience: string; jti: string; validAfter: number; expiresAt: number | null }) {
+    return new SignJWT({
+      access_token_jti: input.jti,
+      valid_after: input.validAfter,
+      access_token_expires_at: input.expiresAt,
+    })
+      .setProtectedHeader({ alg: "RS256", kid: activeJwk.kid, typ: "at-revocation+jwt" })
+      .setIssuer(config.issuer)
+      .setAudience(input.audience)
+      .setIssuedAt()
+      .setExpirationTime("2m")
+      .sign(signingKey);
+  }
+
+  async function readAccessToken(token: string, audience?: string) {
     const { payload } = await jwtVerify(token, verifier, {
       algorithms: ["RS256"],
       issuer: config.issuer,
@@ -155,9 +173,17 @@ export async function createKeyService(config: AppConfig, identity: IdentityServ
     if (!parsed.success) {
       throw new Error("Access token claims are invalid");
     }
-    const claims = parsed.data as AccessTokenClaims;
-    if (payload.gty === "client_credentials" && claims.sub === claims.client_id) {
+    return parsed.data as AccessTokenClaims;
+  }
+
+  async function verifyAccessToken(token: string, audience?: string) {
+    const claims = await readAccessToken(token, audience);
+    if (db && await isAccessTokenRevoked(db, claims.jti)) throw new Error("Access token has been revoked");
+    if (claims.gty === "client_credentials" && claims.sub === claims.client_id) {
       return claims;
+    }
+    if (!/^[A-Za-z0-9_-]{43}$/.test(claims.jti)) {
+      throw new Error("Access token was issued before session JTI tracking");
     }
     const user = await identity.findUserCompact(claims.sub);
     if (
@@ -170,7 +196,7 @@ export async function createKeyService(config: AppConfig, identity: IdentityServ
     return claims;
   }
 
-  return { publicJwks, issueAccessToken, issueApplicationAccessToken, issueIdToken, issueLogoutToken, verifyAccessToken };
+  return { publicJwks, issueAccessToken, issueApplicationAccessToken, issueIdToken, issueLogoutToken, issueAccessTokenRevocation, readAccessToken, verifyAccessToken };
 }
 
 export type KeyService = Awaited<ReturnType<typeof createKeyService>>;

@@ -1,18 +1,22 @@
 import { beforeAll, afterAll, describe, expect, it, vi } from "vitest";
 import { createHmac } from "node:crypto";
 import { eq } from "drizzle-orm";
+import { createLocalJWKSet, jwtVerify } from "jose";
 import { loadConfig, type AppConfig } from "../config.js";
 import { createDatabase, type Database } from "../database/client.js";
 import { migrateDatabase } from "../database/migrate.js";
 import { seedConfiguration } from "../database/seed.js";
 import { createEmailDomainService } from "../database/emailDomains.js";
 import {
+  accessTokenRevocations,
+  authorizationSessions,
   defaultPermissions,
   emailDomainSuffixes,
   oidcClientOrganizations,
   oidcClients,
   oidcPermissions,
   organizations,
+  refreshTokens,
   resourceServers,
   userApplications,
   userPermissions,
@@ -26,6 +30,7 @@ import { createInternalUserService } from "../internal/users.js";
 import { createResourceVerifier } from "../internal/resource-auth.js";
 import { portalScopedDefaults } from "../internal/portal-permissions.js";
 import { createKeyService, type KeyService } from "./keys.js";
+import { hashToken } from "./crypto.js";
 import { createLogoutService } from "./logout.js";
 import { createOAuthService, type OAuthService } from "./service.js";
 import { applyClientEdit, getClientDetail, listClients } from "../../scripts/clients.js";
@@ -92,7 +97,7 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
     await seedConfiguration(db, config.clients, config.resources, { clientId: config.managementPortalClientId });
     emailDomains = createEmailDomainService(db);
     identity = createIdentityService(db, emailDomains, []);
-    keys = await createKeyService(config, identity);
+    keys = await createKeyService(config, identity, db);
     oauth = createOAuthService(config, db, keys, identity);
   }, 120_000);
 
@@ -428,7 +433,7 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
       clientId: "portal",
       redirectUri: "https://portal.example.test/callback",
       responseType: "code",
-      scope: "openid profile email offline_access nethack.access",
+      scope: "openid profile email nethack.access",
       resources: ["urn:basis:api:projects"],
       state: "state-again",
       nonce: "nonce-again",
@@ -444,10 +449,16 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
       redirectUri: "https://portal.example.test/callback",
       codeVerifier: verifier,
     });
-    await expect(keys.verifyAccessToken(String(repeated.access_token))).resolves.toMatchObject({
+    const repeatAccess = await keys.verifyAccessToken(String(repeated.access_token));
+    expect(repeatAccess).toMatchObject({
       client_id: "portal",
       permissions: expectedPortalPermissions,
     });
+    expect(repeated.refresh_token).toBeUndefined();
+    await expect(db.select().from(authorizationSessions).where(eq(authorizationSessions.id, repeatPortalLogin.id)))
+      .resolves.toEqual([expect.objectContaining({
+        userId: user.id, clientId: "portal", refreshExpiresAt: null, accessTokenJti: repeatAccess.jti,
+      })]);
 
     const otherLogin = await oauth.startAuthorization({
       initialUri: "/oauth/authorize",
@@ -474,6 +485,17 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
       client_id: "other-app",
       permissions: ["other.Application.read"],
     });
+    // Simulate a session migrated from before access token JTIs were stored.
+    await db.update(authorizationSessions).set({ accessTokenJti: null }).where(eq(authorizationSessions.id, otherLogin.id));
+    await expect(oauth.exchangeRefreshToken({
+      refreshToken: String(otherTokens.refresh_token),
+      clientId: "other-app",
+      clientSecret: "other-app-secret-long-enough",
+    })).rejects.toMatchObject({ error: "invalid_grant" });
+    await expect(db.select().from(refreshTokens).where(eq(refreshTokens.sessionId, otherLogin.id)))
+      .resolves.toEqual([expect.objectContaining({
+        tokenHash: hashToken(String(otherTokens.refresh_token)), consumedAt: null,
+      })]);
     await expect(
       oauth.exchangeAuthorizationCode({
         code,
@@ -485,12 +507,59 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
     ).rejects.toMatchObject({ error: "invalid_grant" });
 
     const firstRefresh = String(tokens.refresh_token);
-    const rotated = await oauth.exchangeRefreshToken({
-      refreshToken: firstRefresh,
-      clientId: "portal",
-      clientSecret: "portal-secret-long-enough",
+    const refreshRequest = { refreshToken: firstRefresh, clientId: "portal", clientSecret: "portal-secret-long-enough" };
+    const loadSession = () => db.select().from(authorizationSessions).where(eq(authorizationSessions.id, started.id));
+    const [session] = await loadSession();
+    expect(session).toMatchObject({
+      userId: user.id, clientId: "portal", refreshExpiresAt: expect.any(Date), accessTokenJti: access.jti,
     });
-    await expect(keys.verifyAccessToken(String(rotated.access_token))).resolves.toMatchObject({
+    using send = vi.spyOn(globalThis, "fetch")
+      .mockRejectedValueOnce(new Error("connection lost"))
+      .mockImplementation(async () => new Response(null, { status: 204 }));
+    await setLogoutUri(null);
+    await expect(oauth.exchangeRefreshToken(refreshRequest)).rejects.toMatchObject({ error: "invalid_resource", code: 14408 });
+    await expect(loadSession()).resolves.toEqual([session]);
+    expect(send).not.toHaveBeenCalled();
+    await setLogoutUri(logoutUri);
+    const beforeRefresh = Math.floor(Date.now() / 1000);
+    const rotated = await oauth.exchangeRefreshToken(refreshRequest);
+    expect(rotated.refresh_token).toEqual(expect.any(String));
+    expect(rotated.refresh_token).not.toBe(firstRefresh);
+    const rotatedAccess = await keys.verifyAccessToken(String(rotated.access_token));
+    expect(rotatedAccess.jti).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(rotatedAccess.jti).not.toBe(access.jti);
+    await expect(loadSession()).resolves.toEqual([{
+      ...session,
+      accessTokenJti: rotatedAccess.jti,
+      accessTokenExpiresAt: new Date(rotatedAccess.exp * 1000),
+    }]);
+    expect(send).toHaveBeenCalledTimes(1);
+    const callback = new Request(...send.mock.calls[0]!);
+    expect(callback.url).toBe(logoutUri);
+    expect(callback.method).toBe("POST");
+    const form = await callback.formData();
+    expect(form.get("action")).toBe("revoke_access_token");
+    expect(form.get("jti")).toBe(access.jti);
+    const validAfter = Number(form.get("valid_after"));
+    expect(validAfter).toBeGreaterThanOrEqual(beforeRefresh);
+    expect(validAfter).toBeLessThanOrEqual(Math.floor(Date.now() / 1000));
+    const { payload } = await jwtVerify(String(form.get("revocation_token")), createLocalJWKSet(keys.publicJwks), {
+      issuer: config.issuer, audience: resourceAudience, typ: "at-revocation+jwt", algorithms: ["RS256"],
+    });
+    expect(payload).toMatchObject({ access_token_jti: access.jti, valid_after: validAfter, access_token_expires_at: access.exp });
+    await expect(keys.verifyAccessToken(String(tokens.access_token))).rejects.toThrow("revoked");
+    await db.update(accessTokenRevocations).set({ nextAttemptAt: new Date(0) }).where(eq(accessTokenRevocations.jti, access.jti));
+    await oauth.flushAccessTokenRevocations();
+    expect(send).toHaveBeenCalledTimes(2);
+    await expect(db.select().from(accessTokenRevocations).where(eq(accessTokenRevocations.jti, access.jti)))
+      .resolves.toEqual([expect.objectContaining({ deliveredAt: expect.any(Date) })]);
+    const sessionTokens = await db.select().from(refreshTokens).where(eq(refreshTokens.sessionId, session!.id));
+    expect(sessionTokens).toHaveLength(2);
+    expect(sessionTokens).toEqual(expect.arrayContaining([
+      expect.objectContaining({ tokenHash: hashToken(firstRefresh), consumedAt: expect.any(Date) }),
+      expect.objectContaining({ tokenHash: hashToken(String(rotated.refresh_token)), consumedAt: null }),
+    ]));
+    expect(rotatedAccess).toMatchObject({
       sub: user.id,
       client_id: "portal",
       gty: "refresh_token",
@@ -506,6 +575,7 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
         clientSecret: "portal-secret-long-enough",
       }),
     ).rejects.toMatchObject({ error: "invalid_grant" });
+    await expect(loadSession()).resolves.toEqual([expect.objectContaining({ revokedAt: expect.any(Date) })]);
     await expect(
       oauth.exchangeRefreshToken({
         refreshToken: String(rotated.refresh_token),
@@ -513,6 +583,31 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
         clientSecret: "portal-secret-long-enough",
       }),
     ).rejects.toMatchObject({ error: "invalid_grant" });
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  it("revokes an access token only for its issuing client and applies the configured grace period", async () => {
+    const resource = "urn:basis:api:projects";
+    const token = await keys.issueApplicationAccessToken({ clientId: "portal", resource, scopes: [] });
+    const access = await keys.verifyAccessToken(token);
+    using send = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(null, { status: 204 }));
+    const graceSeconds = 60;
+    const withGrace = createOAuthService({ ...config, accessTokenRevocationGraceSeconds: graceSeconds }, db, keys, identity);
+    await withGrace.revoke(token, "other-app", "other-app-secret-long-enough");
+    expect(send).not.toHaveBeenCalled();
+
+    const start = Math.floor(Date.now() / 1000);
+    await withGrace.revoke(token, "portal", "portal-secret-long-enough");
+    expect(send).toHaveBeenCalledTimes(1);
+    const form = await new Request(...send.mock.calls[0]!).formData();
+    expect(form.get("jti")).toBe(access.jti);
+    expect(Number(form.get("valid_after"))).toBeGreaterThanOrEqual(start + graceSeconds);
+    await expect(keys.verifyAccessToken(token)).resolves.toMatchObject({ jti: access.jti });
+
+    await db.update(accessTokenRevocations).set({ validAfter: new Date(0) }).where(eq(accessTokenRevocations.jti, access.jti));
+    await expect(keys.verifyAccessToken(token)).rejects.toThrow("revoked");
+    await withGrace.revoke(token, "portal", "portal-secret-long-enough");
+    expect(send).toHaveBeenCalledTimes(1);
   });
 
   it("moves client configuration and authorization state to a new client ID", async () => {

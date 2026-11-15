@@ -5,6 +5,7 @@ import { z } from "zod";
 import { backchannelLogoutUriSchema } from "../config.js";
 import type { KeyService } from "../oauth/keys.js";
 import type { createLogoutService } from "../oauth/logout.js";
+import type { OAuthService } from "../oauth/service.js";
 import {
   InternalApplicationError,
   type ApplicationActor,
@@ -18,6 +19,7 @@ type ManagementOptions = {
   clientId: string;
   audience: string;
   scope: string;
+  sessions?: Pick<OAuthService, "listAuthorizationSessions" | "endAuthorizationSession">;
 };
 
 type InternalEnvironment = { Variables: { resourceAudience: string; resourceSecret: string } };
@@ -125,28 +127,29 @@ export function createInternalApp(
     });
   }
 
-  async function actor(c: Context<InternalEnvironment>): Promise<ApplicationActor> {
+  async function actor(c: Context<InternalEnvironment>): Promise<{ actor: ApplicationActor; jti: string }> {
     if (!management) throw new InternalApplicationError(404, "not_found", "Application management is unavailable");
     if (c.get("resourceAudience") !== management.audience) {
       throw new InternalApplicationError(403, "forbidden", "Portal resource credentials are required");
     }
     const value = c.req.header("x-basis-actor-token")?.match(/^Bearer ([^\s]+)$/)?.[1];
-    if (!value) throw new InternalApplicationError(403, "forbidden", "Actor token is required");
     try {
+      if (!value) throw new Error("Missing actor token");
       const claims = await management.keys.verifyAccessToken(value, management.audience);
       const scopes = new Set(claims.scope.split(/\s+/).filter(Boolean));
       if (claims.gty === "client_credentials" || claims.client_id !== management.clientId || !scopes.has(management.scope)) {
         throw new Error("actor token is not a portal user token");
       }
-      return { id: claims.sub, permissions: claims.permissions };
+      return { actor: { id: claims.sub, permissions: claims.permissions }, jti: claims.jti };
     } catch {
-      throw new InternalApplicationError(403, "forbidden", "Actor token is invalid");
+      throw new InternalApplicationError(403, "forbidden", "Invalid access token");
     }
   }
 
-  async function managed(c: Context<InternalEnvironment>, operation: (actor: ApplicationActor) => Promise<unknown>) {
+  async function managed(c: Context<InternalEnvironment>, operation: (actor: ApplicationActor, actorJti: string) => Promise<unknown>) {
     try {
-      return c.json(await operation(await actor(c)) as never);
+      const identity = await actor(c);
+      return c.json(await operation(identity.actor, identity.jti) as never);
     } catch (error) {
       if (error instanceof InternalApplicationError) return c.json({ error: error.code, message: error.message }, error.status);
       if (error instanceof InternalUserError) return c.json({ error: error.code, message: error.message }, error.status);
@@ -178,6 +181,28 @@ export function createInternalApp(
     }
     return users.patchManagementUser(c.req.param("userId"), body);
   }));
+
+  if (management?.sessions) {
+    const sessions = management.sessions;
+    const userSessionsPath = "/internal/management/users/:userId/sessions";
+    app.get(userSessionsPath, (c) => managed(c, async (who, actorJti) => {
+      const userId = z.uuid().parse(c.req.param("userId")).toLowerCase();
+      if (who.id !== userId && !new DelegatedPermissionSet(who.permissions).has("BiszPortal.Users.read" as Permission)) {
+        throw new InternalApplicationError(403, "forbidden", "Viewing another user's sessions requires BiszPortal.Users.read");
+      }
+      return { sessions: await sessions.listAuthorizationSessions(userId, actorJti) };
+    }));
+    app.delete(`${userSessionsPath}/:sessionId`, (c) => managed(c, async (who, actorJti) => {
+      const userId = z.uuid().parse(c.req.param("userId")).toLowerCase();
+      const sessionId = z.uuid().parse(c.req.param("sessionId"));
+      if (who.id !== userId && !new DelegatedPermissionSet(who.permissions).has("BiszPortal.Users.update" as Permission)) {
+        throw new InternalApplicationError(403, "forbidden", "Ending another user's session requires BiszPortal.Users.update");
+      }
+      const result = await sessions.endAuthorizationSession(userId, sessionId, actorJti);
+      if (!result) throw new InternalUserError("Active session not found", 404, "session_not_found");
+      return result;
+    }));
+  }
 
   if (management) {
     const roleSchema = z.enum(["role.ADMIN", "role.GENERAL"]);

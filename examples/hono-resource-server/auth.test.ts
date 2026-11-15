@@ -13,7 +13,7 @@ describe("resource-server middleware", () => {
     publicJwk = { ...(await exportJWK(keys.publicKey)), kid: "test", alg: "RS256", use: "sig" };
   });
 
-  async function token(overrides: Record<string, unknown> = {}) {
+  async function token(overrides: Record<string, unknown> = {}, expires = "10m") {
     return new SignJWT({
       sub: "user-id",
       client_id: "portal",
@@ -26,7 +26,7 @@ describe("resource-server middleware", () => {
       .setAudience("urn:basis:api:projects")
       .setJti("test-token")
       .setIssuedAt()
-      .setExpirationTime("10m")
+      .setExpirationTime(expires)
       .sign(privateKey);
   }
 
@@ -119,17 +119,20 @@ describe("resource-server middleware", () => {
     vi.unstubAllGlobals();
   });
 
-  it("rejects a disabled subject after signature validation", async () => {
+  it("returns the same public error for revoked, expired, and malformed access tokens", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue(new Response(JSON.stringify({ keys: [publicJwk] }))),
+      vi.fn().mockImplementation(async () => new Response(JSON.stringify({ keys: [publicJwk] }))),
     );
-    const response = await app(async () => ({ disabled: true, tokensValidAfter: null })).request(
-      "/protected",
-      { headers: { authorization: `Bearer ${await token()}` } },
-    );
-    expect(response.status).toBe(403);
-    expect(await response.json()).toMatchObject({ error: "invalid_token" });
+    const instance = app(async () => ({ disabled: false, tokensValidAfter: new Date() }));
+    for (const accessToken of [await token(), await token({}, "0s"), "malformed"]) {
+      const response = await instance.request("/protected", {
+        headers: { authorization: `Bearer ${accessToken}` },
+      });
+      expect(response.status).toBe(401);
+      expect(response.headers.get("www-authenticate")).toBe('Bearer error="invalid_token"');
+      expect(await response.json()).toEqual({ error: "invalid_token", error_description: "Invalid access token" });
+    }
     vi.unstubAllGlobals();
   });
 });

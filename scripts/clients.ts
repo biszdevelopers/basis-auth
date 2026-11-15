@@ -24,12 +24,12 @@ import {
   authorizationCodes,
   authorizationConsents,
   authorizationRequests,
+  authorizationSessions,
   defaultPermissions,
   oidcClientOrganizations,
   oidcClients,
   oidcPermissions,
   organizations,
-  refreshTokens,
   resourceServers,
   userApplications,
   userPermissions,
@@ -623,7 +623,7 @@ export async function applyClientEdit(db: Database, clientId: string, edit: Edit
       await tx.update(userApplications).set({ applicationId: targetClientId }).where(eq(userApplications.applicationId, clientId));
       await tx.update(authorizationRequests).set({ clientId: targetClientId }).where(eq(authorizationRequests.clientId, clientId));
       await tx.update(authorizationCodes).set({ clientId: targetClientId }).where(eq(authorizationCodes.clientId, clientId));
-      await tx.update(refreshTokens).set({ clientId: targetClientId }).where(eq(refreshTokens.clientId, clientId));
+      await tx.update(authorizationSessions).set({ clientId: targetClientId }).where(eq(authorizationSessions.clientId, clientId));
       await tx.update(authorizationConsents).set({ clientId: targetClientId }).where(eq(authorizationConsents.clientId, clientId));
       await tx.delete(oidcClients).where(eq(oidcClients.clientId, clientId));
     }

@@ -3,9 +3,9 @@ import type { Database } from "../database/client.js";
 import type { EmailDomainService } from "../database/emailDomains.js";
 import {
   authSessions,
+  authorizationSessions,
   oidcClients,
   oidcPermissions,
-  refreshTokens,
   userApplications,
   userPermissions,
   users,
@@ -268,9 +268,9 @@ export function createInternalUserService(db: Database, emailDomains: EmailDomai
       if (!found || !disabledAt) return;
       await transaction.delete(authSessions).where(eq(authSessions.userId, userId));
       await transaction
-        .update(refreshTokens)
+        .update(authorizationSessions)
         .set({ revokedAt: disabledAt })
-        .where(and(eq(refreshTokens.userId, userId), isNull(refreshTokens.revokedAt)));
+        .where(and(eq(authorizationSessions.userId, userId), isNull(authorizationSessions.revokedAt)));
     });
     if (!found) throw new InternalUserError("User not found", 404, "user_not_found");
     return (await findUser(userId))!;
@@ -346,8 +346,8 @@ export function createInternalUserService(db: Database, emailDomains: EmailDomai
       if (!updated.length) throw new InternalUserError("User not found", 404, "user_not_found");
       if (disabledAt) {
         await tx.delete(authSessions).where(eq(authSessions.userId, userId));
-        await tx.update(refreshTokens).set({ revokedAt: disabledAt })
-          .where(and(eq(refreshTokens.userId, userId), isNull(refreshTokens.revokedAt)));
+        await tx.update(authorizationSessions).set({ revokedAt: disabledAt })
+          .where(and(eq(authorizationSessions.userId, userId), isNull(authorizationSessions.revokedAt)));
       }
 
       for (const update of applications) {

@@ -1,0 +1,2 @@
+ALTER TABLE "authorization_sessions" ADD COLUMN "access_token_jti" text;--> statement-breakpoint
+ALTER TABLE "authorization_sessions" ADD CONSTRAINT "authorization_sessions_access_token_jti_unique" UNIQUE("access_token_jti");

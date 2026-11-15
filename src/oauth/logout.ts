@@ -4,6 +4,21 @@ import type { Database } from "../database/client.js";
 import { resourceServers } from "../database/schema.js";
 import type { KeyService } from "./keys.js";
 
+export async function postBackchannel(uri: string, body: URLSearchParams) {
+  try {
+    const response = await fetch(uri, {
+      method: "POST",
+      body,
+      redirect: "error",
+      signal: AbortSignal.timeout(5000),
+    });
+    await response.body?.cancel();
+    return response.status === 200 || response.status === 204;
+  } catch {
+    return false;
+  }
+}
+
 export function createLogoutService(db: Database, keys: Pick<KeyService, "issueLogoutToken">) {
   return async function executeLogout(userId: string, audience: string) {
     const [resource] = await db.select({ uri: resourceServers.backchannelLogoutUri })
@@ -16,18 +31,8 @@ export function createLogoutService(db: Database, keys: Pick<KeyService, "issueL
     if (!uri.success) return "logout_delivery_failed";
 
     const logoutToken = await keys.issueLogoutToken(userId, audience);
-    try {
-      const response = await fetch(uri.data, {
-        method: "POST",
-        body: new URLSearchParams({ logout_token: logoutToken }),
-        redirect: "error",
-        signal: AbortSignal.timeout(5000),
-      });
-      await response.body?.cancel();
-      if (response.status === 200 || response.status === 204) return "delivered";
-    } catch {
-      return "logout_delivery_failed";
-    }
-    return "logout_delivery_failed";
+    return await postBackchannel(uri.data, new URLSearchParams({ logout_token: logoutToken }))
+      ? "delivered"
+      : "logout_delivery_failed";
   };
 }

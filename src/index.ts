@@ -38,7 +38,7 @@ const identity = createIdentityService(
   emailDomains,
   config.bootstrapPermissionGrants,
 );
-const keys = await createKeyService(config, identity);
+const keys = await createKeyService(config, identity, db);
 const sessions = createSessionService(db);
 const oauth = createOAuthService(config, db, keys, identity);
 const microsoft = createMicrosoftService(config, db, identity);
@@ -54,6 +54,7 @@ const internalApp = createInternalApp({
   clientId: config.managementPortalClientId,
   audience: config.managementPortalAudience,
   scope: config.managementPortalScope,
+  sessions: oauth,
 }, createLogoutService(db, keys));
 
 const server = serve({ fetch: app.fetch, port: config.port }, () => {
@@ -70,6 +71,15 @@ const internalServer = serve(
   },
 );
 
+let revocationFlush: Promise<void> | undefined;
+function flushRevocations() {
+  revocationFlush ??= oauth.flushAccessTokenRevocations()
+    .catch(() => console.warn("Could not process pending access token revocations"))
+    .finally(() => { revocationFlush = undefined; });
+}
+const revocationTimer = setInterval(flushRevocations, 5000).unref();
+flushRevocations();
+
 async function reconcileConfiguredLogoutUris() {
   for (const resource of config.resources) {
     if (!resource.backchannelLogoutUri) continue;
@@ -84,10 +94,12 @@ async function reconcileConfiguredLogoutUris() {
 
 async function shutdown(signal: string) {
   console.log(`Received ${signal}; shutting down`);
+  clearInterval(revocationTimer);
   await Promise.all([
     new Promise<void>((resolve) => server.close(() => resolve())),
     new Promise<void>((resolve) => internalServer.close(() => resolve())),
   ]);
+  await revocationFlush;
   await pool.end();
   process.exit(0);
 }

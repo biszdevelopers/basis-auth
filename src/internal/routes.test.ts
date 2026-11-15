@@ -3,6 +3,7 @@ import { createInternalApp } from "./app.js";
 import type { InternalUserService } from "./users.js";
 import type { InternalApplicationService } from "./applications.js";
 import type { KeyService } from "../oauth/keys.js";
+import type { OAuthService } from "../oauth/service.js";
 
 const token = "i".repeat(32);
 const portalAudience = "devconnect://noesis";
@@ -38,6 +39,7 @@ function managementApp(
   applications: InternalApplicationService,
   verifyAccessToken = vi.fn(),
   users = {} as InternalUserService,
+  sessions?: Pick<OAuthService, "listAuthorizationSessions" | "endAuthorizationSession">,
 ) {
   return createInternalApp(authentication, users, {
     applications,
@@ -45,8 +47,43 @@ function managementApp(
     clientId: "portal-client",
     audience: portalAudience,
     scope: "noesis.access",
+    sessions,
   });
 }
+
+it("allows actors to manage their own sessions and requires delegated permissions for other users", async () => {
+  const otherUserId = "2caa198c-0d46-49ba-a456-505978796f0d";
+  const sessionId = "f7cd643f-ea84-482e-9317-1e0b00ad32c1";
+  const session = { id: sessionId, createdAt: new Date(), expiresAt: new Date(), resource: portalAudience, current: true };
+  const listAuthorizationSessions = vi.fn().mockResolvedValue([session]);
+  const endAuthorizationSession = vi.fn().mockResolvedValue({ currentSessionEnded: true });
+  const claims = { sub: user.id, jti: "actor-jti", client_id: "portal-client", scope: "noesis.access", permissions: [] };
+  const verify = vi.fn().mockResolvedValue(claims);
+  const app = managementApp({} as InternalApplicationService, verify, undefined, {
+    listAuthorizationSessions, endAuthorizationSession,
+  });
+  const path = (id: string) => `/internal/management/users/${id}/sessions`;
+  const headers = { ...portalCredentials, "x-basis-actor-token": "Bearer actor" };
+
+  const list = await app.request(path(user.id), { headers });
+  expect(list.status).toBe(200);
+  expect(await list.json()).toEqual({ sessions: [{ ...session, createdAt: session.createdAt.toISOString(), expiresAt: session.expiresAt.toISOString() }] });
+  expect(listAuthorizationSessions).toHaveBeenCalledWith(user.id, claims.jti);
+
+  expect((await app.request(path(otherUserId), { headers })).status).toBe(403);
+  expect((await app.request(`${path(otherUserId)}/${sessionId}`, { method: "DELETE", headers })).status).toBe(403);
+  expect(endAuthorizationSession).not.toHaveBeenCalled();
+
+  const ended = await app.request(`${path(user.id)}/${sessionId}`, { method: "DELETE", headers });
+  expect(ended.status).toBe(200);
+  expect(await ended.json()).toEqual({ currentSessionEnded: true });
+  expect(endAuthorizationSession).toHaveBeenCalledWith(user.id, sessionId, claims.jti);
+
+  verify.mockResolvedValue({ ...claims, permissions: ["BiszPortal.Users.update"] });
+  endAuthorizationSession.mockResolvedValue(null);
+  expect((await app.request(`${path(otherUserId)}/${sessionId}`, { method: "DELETE", headers })).status).toBe(404);
+  expect(endAuthorizationSession).toHaveBeenLastCalledWith(otherUserId, sessionId, claims.jti);
+});
 
 describe("internal user HTTP API", () => {
   it("rejects requests without the internal service token", async () => {

@@ -48,8 +48,8 @@ export function createIdentityService(
   emailDomains: EmailDomainService,
   bootstrapGrants: BootstrapPermissionGrant[],
 ) {
-  async function permissionsFor(userId: string, applicationId: string): Promise<string[]> {
-    const grants = await db
+  async function permissionsFor(userId: string, applicationId: string, database: Pick<Database, "select"> = db): Promise<string[]> {
+    const grants = await database
       .select({ permission: userPermissions.permission })
       .from(userPermissions)
       .where(and(
@@ -59,8 +59,8 @@ export function createIdentityService(
     return [...new Set(grants.map((row) => row.permission))].sort();
   }
 
-  async function registerApplicationLogin(userId: string, applicationId: string): Promise<void> {
-    await db.transaction(async (tx) => {
+  async function registerApplicationLogin(userId: string, applicationId: string, database: Pick<Database, "transaction"> = db): Promise<void> {
+    await database.transaction(async (tx) => {
       const [created] = await tx
         .insert(userApplications)
         .values({ userId, applicationId })
@@ -179,8 +179,8 @@ export function createIdentityService(
     return user!;
   }
 
-  async function findAccount(userId: string) {
-    const [user] = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+  async function findAccount(userId: string, database: Pick<Database, "select"> = db) {
+    const [user] = await database.select().from(users).where(eq(users.id, userId)).limit(1);
     if (!user || user.disabled) return undefined;
     return {
       accountId: user.id,
@@ -209,8 +209,8 @@ export function createIdentityService(
     return ids.length ? db.select().from(users).where(inArray(users.id, ids)) : [];
   }
 
-  async function findUser(userId: string) {
-    const [user] = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+  async function findUser(userId: string, database: Pick<Database, "select"> = db) {
+    const [user] = await database.select().from(users).where(eq(users.id, userId)).limit(1);
     return user;
   }
 

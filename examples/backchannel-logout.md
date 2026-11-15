@@ -52,3 +52,17 @@ Authorization-code sign-in requires a valid saved webhook for the requested reso
 When Basis Auth delivers a logout, it sends a form-encoded `POST` to the verified URL with a `logout_token` field. Route `action=test` requests to the verification flow and `logout_token` requests to session termination.
 
 Verify the logout token signature against Basis Auth's `/oauth/jwks`. Require `alg=RS256`, `typ=logout+jwt`, the configured issuer, the resource audience, and a valid expiration. Basis Auth issues these tokens for two minutes and includes `sub`, `iat`, `jti`, and the `http://schemas.openid.net/event/backchannel-logout` event. End the local sessions for the verified `sub` and return `200` or `204`.
+
+## Receive access-token revocations
+
+Basis Auth posts to the same URL when an access token is replaced by refresh or explicitly revoked. Expired access tokens are rejected during normal JWT validation. A refresh for an audience without a valid saved URL fails with `14408: invalid_resource` before consuming the refresh token.
+
+The form body contains `action=revoke_access_token`, the revoked access token's `jti`, `valid_after` as a Unix timestamp in seconds, and a signed `revocation_token`. `ACCESS_TOKEN_REVOCATION_GRACE_SECONDS` controls how far in the future `valid_after` is set and defaults to `0`.
+
+Verify `revocation_token` with `/oauth/jwks`. Require `alg=RS256`, `typ=at-revocation+jwt`, the configured issuer, your resource audience, and a valid expiration. The verified claims `access_token_jti` and `valid_after` must match the form fields. Use those signed claims to store the JTI in your denylist and reject matching access JWTs at or after `valid_after`. The signed `access_token_expires_at` claim is the old JWT's expiration in Unix seconds, or `null` for a session created before expiration tracking. When known, keep the entry through expiration plus your JWT verifier's clock tolerance.
+
+Return `200` or `204` after persisting the entry. Delivery may be retried, so handle duplicates by keeping the earliest revocation time for the JTI. Each event targets one access token. Continue to handle user-wide session termination through the existing `logout_token` flow.
+
+Reject access tokens found in the denylist using the same public response as other invalid access tokens. Follow the [access-token rejection standard](../README.md#access-token-rejection) and keep any reason for the rejection in server-side console logs.
+
+The portal can list a user's active authorization sessions through `GET /internal/management/users/:userId/sessions` and end one through `DELETE /internal/management/users/:userId/sessions/:sessionId`. Both routes require the portal's resource credentials and a signed portal actor token. Users can manage their own sessions. Access to other users' sessions follows the portal's user read and update permissions. Ending a session disables its refresh grant and queues a revocation for its current access token with no grace period. Basis Auth attempts delivery to that session's resource before responding and retries failed deliveries.

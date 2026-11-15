@@ -1,4 +1,5 @@
-import { and, eq, gt, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
+import { decodeJwt } from "jose";
 import {
   EPHEMERAL_LOCALHOST_REDIRECT_PREFIX,
   backchannelLogoutUriSchema,
@@ -16,13 +17,16 @@ import {
   authorizationCodes,
   authorizationConsents,
   authorizationRequests,
+  authorizationSessions,
   oidcClientOrganizations,
   oidcClients,
   organizations,
   refreshTokens,
   resourceServers,
+  users,
 } from "../database/schema.js";
 import type { IdentityService } from "../identity.js";
+import { createAccessTokenRevocationDelivery, recordAccessTokenRevocation } from "./access-token-revocations.js";
 import { hashToken, isValidS256PkceRequest, randomToken, verifyS256Pkce } from "./crypto.js";
 import { OAuthError } from "./errors.js";
 import type { KeyService } from "./keys.js";
@@ -152,6 +156,7 @@ export function createOAuthService(
   keys: KeyService,
   identity: IdentityService,
 ) {
+  const revocationDelivery = createAccessTokenRevocationDelivery(db, keys);
   const clientByIdStmt = db
     .select()
     .from(oidcClients)
@@ -470,32 +475,17 @@ export function createOAuthService(
     return denialRedirect(request);
   }
 
-  async function issueTokenSet(input: {
-    userId: string;
+  async function issueTokenSet(database: Pick<Database, "select">, user: typeof users.$inferSelect, input: {
     clientId: string;
     scopes: string[];
     resource: string;
     nonce?: string;
     authenticatedAt?: Date;
-    familyId?: string;
-    refreshExpiresAt?: Date;
     grantType: "authorization_code" | "refresh_token";
   }) {
-    const user = await identity.findUser(input.userId);
-    if (!user || user.disabled) {
-      if (input.familyId) {
-        await db
-          .update(refreshTokens)
-          .set({ revokedAt: new Date() })
-          .where(eq(refreshTokens.familyId, input.familyId));
-      }
-      throw new OAuthError("invalid_grant", "User is missing or disabled");
-    }
-    if (input.grantType === "authorization_code") {
-      await identity.registerApplicationLogin?.(input.userId, input.clientId);
-    }
-    const permissions = await identity.permissionsFor(input.userId, input.clientId);
-    const accessToken = await keys.issueAccessToken(input, { user, permissions });
+    const permissions = await identity.permissionsFor(user.id, input.clientId, database);
+    const accessTokenJti = randomToken();
+    const accessToken = await keys.issueAccessToken({ ...input, userId: user.id, jti: accessTokenJti }, { user, permissions });
     const response: Record<string, unknown> = {
       access_token: accessToken,
       token_type: "Bearer",
@@ -503,26 +493,21 @@ export function createOAuthService(
       scope: input.scopes.join(" "),
     };
     if (input.nonce && input.authenticatedAt) {
-      const account = await identity.findAccount(input.userId);
+      const account = await identity.findAccount(user.id, database);
+      if (!account) throw new OAuthError("invalid_grant", "User is missing or disabled");
       response.id_token = await keys.issueIdToken(
-        { ...input, accessToken, nonce: input.nonce, authenticatedAt: input.authenticatedAt },
+        { ...input, userId: user.id, accessToken, nonce: input.nonce, authenticatedAt: input.authenticatedAt },
         { account, permissions },
       );
     }
-    if (input.scopes.includes("offline_access")) {
-      const refreshToken = randomToken(64);
-      await db.insert(refreshTokens).values({
-        tokenHash: hashToken(refreshToken),
-        familyId: input.familyId ?? crypto.randomUUID(),
-        clientId: input.clientId,
-        userId: input.userId,
-        scopes: input.scopes,
-        resource: input.resource,
-        expiresAt: input.refreshExpiresAt ?? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-      });
-      response.refresh_token = refreshToken;
-    }
-    return response;
+    const accessTokenExpiresAt = new Date(decodeJwt<{ exp: number }>(accessToken).exp * 1000);
+    return { response, accessTokenJti, accessTokenExpiresAt };
+  }
+
+  async function issueRefreshToken(database: Pick<Database, "insert">, sessionId: string) {
+    const token = randomToken(64);
+    await database.insert(refreshTokens).values({ tokenHash: hashToken(token), sessionId });
+    return token;
   }
 
   async function exchangeAuthorizationCode(input: {
@@ -556,25 +541,38 @@ export function createOAuthService(
       throw new OAuthError("invalid_grant", "Authorization code was already used");
     }
     await requireLoginResource(db, authorizationCode.resource);
-    const consumed = await db
-      .update(authorizationCodes)
-      .set({ consumedAt: new Date() })
-      .where(
-        and(
+    return db.transaction(async (tx) => {
+      const [consumed] = await tx
+        .update(authorizationCodes)
+        .set({ consumedAt: new Date() })
+        .where(and(
           eq(authorizationCodes.codeHash, authorizationCode.codeHash),
+          eq(authorizationCodes.clientId, input.clientId),
           isNull(authorizationCodes.consumedAt),
-        ),
-      )
-      .returning({ codeHash: authorizationCodes.codeHash });
-    if (!consumed.length) throw new OAuthError("invalid_grant", "Authorization code was already used");
-    return issueTokenSet({
-      userId: authorizationCode.userId,
-      clientId: authorizationCode.clientId,
-      scopes: authorizationCode.scopes,
-      resource: authorizationCode.resource,
-      nonce: authorizationCode.nonce,
-      authenticatedAt: authorizationCode.authenticatedAt,
-      grantType: "authorization_code",
+          gt(authorizationCodes.expiresAt, new Date()),
+        ))
+        .returning();
+      if (!consumed) throw new OAuthError("invalid_grant", "Authorization code is invalid or was already used");
+
+      const [user] = await tx.select().from(users).where(eq(users.id, consumed.userId)).for("share");
+      if (!user || user.disabled) throw new OAuthError("invalid_grant", "User is missing or disabled");
+      await identity.registerApplicationLogin?.(user.id, consumed.clientId, tx);
+      const { response, accessTokenJti, accessTokenExpiresAt } = await issueTokenSet(tx, user, { ...consumed, grantType: "authorization_code" });
+      const sessionId = consumed.requestId;
+      const canRefresh = consumed.scopes.includes("offline_access");
+      await tx.insert(authorizationSessions).values({
+        id: sessionId,
+        userId: user.id,
+        clientId: consumed.clientId,
+        scopes: consumed.scopes,
+        resource: consumed.resource,
+        authenticatedAt: consumed.authenticatedAt,
+        accessTokenJti,
+        accessTokenExpiresAt,
+        refreshExpiresAt: canRefresh ? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) : null,
+      });
+      if (canRefresh) response.refresh_token = await issueRefreshToken(tx, sessionId);
+      return response;
     });
   }
 
@@ -585,42 +583,47 @@ export function createOAuthService(
   }) {
     await authenticateClient(input.clientId, input.clientSecret);
     const tokenHash = hashToken(input.refreshToken);
-    const [stored] = await db.select().from(refreshTokens).where(eq(refreshTokens.tokenHash, tokenHash)).limit(1);
-    if (!stored || stored.clientId !== input.clientId) {
-      throw new OAuthError("invalid_grant", "Refresh token is invalid");
-    }
-    if (stored.consumedAt || stored.revokedAt || stored.expiresAt <= new Date()) {
-      await db
-        .update(refreshTokens)
-        .set({ revokedAt: new Date() })
-        .where(eq(refreshTokens.familyId, stored.familyId));
-      throw new OAuthError("invalid_grant", "Refresh token reuse detected");
-    }
-    const consumed = await db
-      .update(refreshTokens)
-      .set({ consumedAt: new Date() })
-      .where(
-        and(
-          eq(refreshTokens.tokenHash, tokenHash),
-          isNull(refreshTokens.consumedAt),
-          isNull(refreshTokens.revokedAt),
-          gt(refreshTokens.expiresAt, new Date()),
-        ),
-      )
-      .returning({ tokenHash: refreshTokens.tokenHash });
-    if (!consumed.length) {
-      await db.update(refreshTokens).set({ revokedAt: new Date() }).where(eq(refreshTokens.familyId, stored.familyId));
-      throw new OAuthError("invalid_grant", "Refresh token reuse detected");
-    }
-    return issueTokenSet({
-      userId: stored.userId,
-      clientId: stored.clientId,
-      scopes: stored.scopes,
-      resource: stored.resource,
-      familyId: stored.familyId,
-      refreshExpiresAt: stored.expiresAt,
-      grantType: "refresh_token",
+    const result = await db.transaction(async (tx) => {
+      // Serialize token rotation and revocation on the session row.
+      const [session] = await tx.select().from(authorizationSessions).where(and(
+        eq(authorizationSessions.clientId, input.clientId),
+        inArray(authorizationSessions.id, tx.select({ id: refreshTokens.sessionId })
+          .from(refreshTokens).where(eq(refreshTokens.tokenHash, tokenHash))),
+      )).for("update");
+      if (!session?.accessTokenJti || session.revokedAt || !session.refreshExpiresAt || session.refreshExpiresAt <= new Date()) {
+        return { error: "Refresh token is invalid or expired" };
+      }
+
+      const [stored] = await tx.select().from(refreshTokens).where(eq(refreshTokens.tokenHash, tokenHash));
+      if (!stored) return { error: "Refresh token is invalid" };
+      if (stored.consumedAt) {
+        await tx.update(authorizationSessions).set({ revokedAt: new Date() }).where(eq(authorizationSessions.id, session.id));
+        return { error: "Refresh token reuse detected" };
+      }
+
+      await requireLoginResource(tx, session.resource);
+      const user = await identity.findUser(session.userId, tx);
+      if (!user || user.disabled) {
+        await tx.update(authorizationSessions).set({ revokedAt: new Date() }).where(eq(authorizationSessions.id, session.id));
+        return { error: "User is missing or disabled" };
+      }
+      const { response, accessTokenJti, accessTokenExpiresAt } = await issueTokenSet(tx, user, {
+        clientId: session.clientId,
+        scopes: session.scopes,
+        resource: session.resource,
+        grantType: "refresh_token",
+      });
+      await tx.update(refreshTokens).set({ consumedAt: new Date() }).where(eq(refreshTokens.tokenHash, tokenHash));
+      response.refresh_token = await issueRefreshToken(tx, session.id);
+      await tx.update(authorizationSessions).set({ accessTokenJti, accessTokenExpiresAt }).where(eq(authorizationSessions.id, session.id));
+      await recordAccessTokenRevocation(tx, {
+        jti: session.accessTokenJti, audience: session.resource, expiresAt: session.accessTokenExpiresAt,
+      }, config.accessTokenRevocationGraceSeconds);
+      return { response, revokedJti: session.accessTokenJti };
     });
+    if (result.error !== undefined) throw new OAuthError("invalid_grant", result.error);
+    await revocationDelivery.deliver(result.revokedJti);
+    return result.response;
   }
 
   async function exchangeClientCredentials(input: {
@@ -676,14 +679,72 @@ export function createOAuthService(
 
   async function revoke(token: string, clientId: string, clientSecret?: string) {
     await authenticateClient(clientId, clientSecret);
-    const [stored] = await db
-      .select()
-      .from(refreshTokens)
-      .where(eq(refreshTokens.tokenHash, hashToken(token)))
-      .limit(1);
-    if (stored?.clientId === clientId) {
-      await db.update(refreshTokens).set({ revokedAt: new Date() }).where(eq(refreshTokens.familyId, stored.familyId));
+    const access = await keys.readAccessToken(token).catch(() => undefined);
+    if (access) {
+      if (access.client_id !== clientId || typeof access.aud !== "string") return;
+      await recordAccessTokenRevocation(db, {
+        jti: access.jti, audience: access.aud, expiresAt: new Date(access.exp * 1000),
+      }, config.accessTokenRevocationGraceSeconds);
+      await revocationDelivery.deliver(access.jti);
+      return;
     }
+
+    const jti = await db.transaction(async (tx) => {
+      const [session] = await tx.update(authorizationSessions).set({ revokedAt: new Date() }).where(and(
+        eq(authorizationSessions.clientId, clientId),
+        isNull(authorizationSessions.revokedAt),
+        inArray(authorizationSessions.id, tx.select({ id: refreshTokens.sessionId })
+          .from(refreshTokens).where(eq(refreshTokens.tokenHash, hashToken(token)))),
+      )).returning();
+      if (!session?.accessTokenJti) return undefined;
+
+      await recordAccessTokenRevocation(tx, {
+        jti: session.accessTokenJti, audience: session.resource, expiresAt: session.accessTokenExpiresAt,
+      }, config.accessTokenRevocationGraceSeconds);
+      return session.accessTokenJti;
+    });
+    if (jti) await revocationDelivery.deliver(jti);
+  }
+
+  async function listAuthorizationSessions(userId: string, actorJti: string) {
+    const expiresAt = sql<Date>`greatest(
+      ${authorizationSessions.refreshExpiresAt},
+      coalesce(${authorizationSessions.accessTokenExpiresAt},
+        ${authorizationSessions.createdAt} + ${config.accessTokenLifetimeSeconds}::double precision * interval '1 second')
+    )`;
+    return db.select({
+      id: authorizationSessions.id,
+      createdAt: authorizationSessions.createdAt,
+      expiresAt: expiresAt.mapWith(authorizationSessions.createdAt),
+      resource: authorizationSessions.resource,
+      current: sql<boolean>`coalesce(${authorizationSessions.accessTokenJti} = ${actorJti}, false)`,
+    }).from(authorizationSessions).where(and(
+      eq(authorizationSessions.userId, userId),
+      isNull(authorizationSessions.revokedAt),
+      gt(expiresAt, new Date()),
+    )).orderBy(desc(authorizationSessions.createdAt), desc(authorizationSessions.id));
+  }
+
+  async function endAuthorizationSession(userId: string, sessionId: string, actorJti: string) {
+    const ended = await db.transaction(async (tx) => {
+      const [session] = await tx.update(authorizationSessions).set({ revokedAt: new Date() }).where(and(
+        eq(authorizationSessions.userId, userId),
+        eq(authorizationSessions.id, sessionId),
+        isNull(authorizationSessions.revokedAt),
+      )).returning({
+        jti: authorizationSessions.accessTokenJti,
+        resource: authorizationSessions.resource,
+        expiresAt: authorizationSessions.accessTokenExpiresAt,
+      });
+      if (session?.jti) {
+        await recordAccessTokenRevocation(tx, {
+          jti: session.jti, audience: session.resource, expiresAt: session.expiresAt,
+        }, 0);
+      }
+      return session;
+    });
+    if (ended?.jti) await revocationDelivery.deliver(ended.jti);
+    return ended ? { currentSessionEnded: ended.jti === actorJti } : null;
   }
 
   async function userInfo(accessToken: string) {
@@ -718,7 +779,10 @@ export function createOAuthService(
     exchangeAuthorizationCode,
     exchangeRefreshToken,
     exchangeClientCredentials,
+    listAuthorizationSessions,
+    endAuthorizationSession,
     revoke,
+    flushAccessTokenRevocations: revocationDelivery.flush,
     userInfo,
     invalidateClient: (clientId: string) => clientCache.invalidate(clientId),
   };

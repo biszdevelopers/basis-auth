@@ -31,17 +31,15 @@ export function basisAuth(options: {
 
   return async (c, next) => {
     const authorization = c.req.header("authorization");
-    if (!authorization?.startsWith("Bearer ")) {
-      return c.json({ error: "invalid_token", error_description: "Bearer token required" }, 401, {
-        "WWW-Authenticate": "Bearer",
-      });
-    }
     try {
-      const { payload, protectedHeader } = await jwtVerify(authorization.slice(7), jwks, {
+      const token = authorization?.match(/^Bearer ([^\s]+)$/i)?.[1];
+      if (!token) throw new Error("Missing bearer access token");
+      const { payload } = await jwtVerify(token, jwks, {
         algorithms: ["RS256"],
         issuer,
         audience: options.audience,
         typ: "at+jwt",
+        requiredClaims: ["exp"],
       });
       if (
         !payload.sub ||
@@ -59,19 +57,18 @@ export function basisAuth(options: {
         if (
           !subject ||
           subject.disabled ||
-          typeof payload.iat !== "number" ||
           (subject.tokensValidAfter && payload.iat * 1000 <= subject.tokensValidAfter.getTime())
         ) {
-          return c.json({ error: "invalid_token", error_description: "Access token has been revoked" }, 403);
+          throw new Error("Access token subject is unavailable or revoked");
         }
       }
       c.set("basisToken", payload as BasisAccessToken);
-      await next();
     } catch {
-      return c.json({ error: "invalid_token", error_description: "Access token is invalid" }, 401, {
+      return c.json({ error: "invalid_token", error_description: "Invalid access token" }, 401, {
         "WWW-Authenticate": 'Bearer error="invalid_token"',
       });
     }
+    await next();
   };
 }
 

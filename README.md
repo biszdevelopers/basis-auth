@@ -165,6 +165,12 @@ ID tokens authenticate the client login. They must never be accepted by resource
 
 Other platforms should implement the same contract with their standard OAuth resource-server library. APIs that only verify JWTs locally observe user disablement and permission changes when existing access tokens expire, within ten minutes.
 
+### Access-token rejection
+
+Resource servers must use the same public response for revoked, expired, malformed, and otherwise invalid access tokens. Bearer APIs return HTTP `401`, `WWW-Authenticate: Bearer error="invalid_token"`, and the description `Invalid access token` in their error envelope. Cookie-based applications may use their existing session error code with the same description and HTTP status. Access checks for valid tokens still use the resource's usual permission and scope errors.
+
+Keep any rejection details in server-side console logs. Omit tokens, credentials, and token claims from those logs.
+
 Resource APIs that require immediate per-user revocation must also load the token subject's `disabled` and `tokens_valid_after` state after signature validation. Reject disabled subjects and tokens whose `iat` is at or before that barrier. The example middleware exposes `loadTokenSubject` for this check while keeping JWT and revocation validation local to the resource API.
 
 `basis-api` uses the private `/internal/users/:userId` endpoints for identity state and profile pictures. Every request sends the resource audience as `X-Basis-Resource: <URL-encoded audience>` and the resource secret as `Authorization: Bearer <secret>`. Resource secrets are stored as scrypt hashes. The listener binds to `127.0.0.1:3001` by default and is configured through `INTERNAL_API_HOST` and `INTERNAL_API_PORT`.
