@@ -6,6 +6,10 @@ It intentionally does **not** host application resources or share browser sessio
 
 The implemented surface is intentionally small and is not presented as OpenID certification. Before an internet-facing production launch, run the OpenID Foundation conformance suite and obtain a focused security review of the authorization, redirect, refresh-rotation, and key-management paths.
 
+## SETUP_GUIDE.md Is Mandatory
+
+[`SETUP_GUIDE.md`](./SETUP_GUIDE.md) is the downstream integration contract. **Every commit that changes logic, configuration, endpoints, token claims or lifetimes, registration rules, scopes, permissions, error codes, examples, or integration steps MUST include the matching `SETUP_GUIDE.md` update in that same commit.** Do not defer it to a follow-up. A change that alters behavior without updating the guide is incomplete and must not be merged.
+
 ## Architecture
 
 - **Hono** serves health checks, Microsoft login/callback routes, and the React interaction UI.
