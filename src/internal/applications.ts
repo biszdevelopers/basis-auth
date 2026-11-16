@@ -221,7 +221,7 @@ export function createInternalApplicationService(
     const { row, metadata, membership } = await readApplication(clientId, actor);
     const own = Boolean(membership);
     const isAdmin = membership?.role === "role.ADMIN";
-    const [resources, allClients, linkedOrganizations, availableOrganizations, permissions, defaults] = await Promise.all([
+    const [resources, allClients, linkedOrganizations, availableOrganizations, permissions, defaults, availableResources] = await Promise.all([
       db.select().from(resourceServers).where(inArray(resourceServers.audience, row.resources)),
       db.select({ clientId: oidcClients.clientId, resources: oidcClients.resources }).from(oidcClients),
       db.select({ organizationId: organizations.organizationId }).from(oidcClientOrganizations)
@@ -232,7 +232,14 @@ export function createInternalApplicationService(
         .from(oidcPermissions).where(eq(oidcPermissions.clientId, clientId)),
       db.select({ permission: defaultPermissions.permission })
         .from(defaultPermissions).where(eq(defaultPermissions.applicationId, clientId)),
+      db.select().from(resourceServers),
     ]);
+    const claimsByAudience = new Map<string, number>();
+    for (const client of allClients) {
+      for (const audience of client.resources ?? []) {
+        claimsByAudience.set(audience, (claimsByAudience.get(audience) ?? 0) + 1);
+      }
+    }
     const ownerIds = metadata.owners.map((owner) => owner.id);
     const people = ownerIds.length ? await db.select({
       id: users.id,
@@ -273,11 +280,11 @@ export function createInternalApplicationService(
         name: resource.name,
         availableScopes: resource.scopes,
         grantedScopes: assignedScopes(metadata, resource.audience),
-        claimCount: allClients.filter((client) => client.resources.includes(resource.audience)).length,
+        claimCount: claimsByAudience.get(resource.audience) ?? 0,
         canUpdate: canAccessResource(actor, resource, "update"),
         canDelete: canAccessResource(actor, resource, "delete"),
       })),
-      availableResources: (await db.select().from(resourceServers)).filter((resource) => canAccessResource(actor, resource, "read"))
+      availableResources: availableResources.filter((resource) => canAccessResource(actor, resource, "read"))
         .map((resource) => ({ resourceId: resource.audience, name: resource.name, availableScopes: resource.scopes })),
       permissions,
       defaultPermissions: defaults.map(({ permission }) => permission).sort(),
@@ -377,7 +384,8 @@ export function createInternalApplicationService(
   }
 
   async function assertScopesCoverAssignments(tx: Transaction, resource: ResourceRow, nextScopes: string[]) {
-    const removedScopes = new Set(resource.scopes.filter((scope) => !nextScopes.includes(scope)));
+    const nextSet = new Set(nextScopes);
+    const removedScopes = new Set(resource.scopes.filter((scope) => !nextSet.has(scope)));
     if (!removedScopes.size) return;
     const clients = await attachedClients(tx, resource.audience);
     for (const client of clients) {
@@ -448,7 +456,7 @@ export function createInternalApplicationService(
     if (skipUnchanged && sameUris(previous.backchannelLogoutUris, next)) {
       return { backchannelLogoutUris: next };
     }
-    for (const uri of next) {
+    await Promise.all(next.map(async (uri) => {
       const result = await backchannel.verifyDestination(resourceId, uri);
       if (result === "timeout") {
         throw new InternalApplicationError(504, "backchannel_timeout", "The resource did not complete webhook verification in time");
@@ -456,7 +464,7 @@ export function createInternalApplicationService(
       if (result !== "verified") {
         throw new InternalApplicationError(502, "backchannel_test_failed", `The webhook test failed for ${uri}. The endpoint must accept the test with HTTP 202`);
       }
-    }
+    }));
 
     return db.transaction(async (tx) => {
       const [resource] = await tx.select().from(resourceServers).where(eq(resourceServers.audience, resourceId)).for("update");
@@ -590,7 +598,8 @@ export function createInternalApplicationService(
         throw new InternalApplicationError(400, "invalid_scopes", "Scopes contain an unavailable resource");
       }
       for (const resource of visible) {
-        if (Object.hasOwn(input, resource.audience) && input[resource.audience]!.some((scope) => !resource.scopes.includes(scope))) {
+        const registered = new Set(resource.scopes);
+        if (Object.hasOwn(input, resource.audience) && input[resource.audience]!.some((scope) => !registered.has(scope))) {
           throw new InternalApplicationError(400, "invalid_scopes", `Unsupported scope for ${resource.audience}`);
         }
       }

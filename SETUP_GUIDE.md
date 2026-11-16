@@ -619,7 +619,10 @@ the change window. If validation fails:
 
 ## 11. Troubleshooting
 
-Numeric codes are application codes, not HTTP status codes.
+Numeric codes are application codes, not HTTP status codes. When login fails,
+the error page shows the numeric code, error name, and description for
+administrators so they can identify the failing resource or client. Never paste
+tokens, codes, secrets, or cookies into a support request.
 
 | Code | Meaning | Fix |
 | --- | --- | --- |

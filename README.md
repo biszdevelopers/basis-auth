@@ -219,7 +219,7 @@ These are NOT Http response codes.
 | 14429 | unsupported_response_type | Unsupported response type |
 | 14401 | invalid_scope | Client requests one or more scopes that is not configured or permitted |
 | 14407 | unknown_resource | The requested resource audience has no `resource_servers` row. The error names the audience; register it by re-saving the client via `bun run clients` or adding it to `OIDC_RESOURCES_JSON` and restarting. |
-| 14408 | invalid_resource | The resource has no valid backchannel logout URL. Configure at least one webhook before attempting an authorization-code login. This also applies to the development demo and the portal's own resource. |
+| 14408 | invalid_resource | The resource has no valid backchannel logout URL. An administrator must add and verify at least one callback under Resource Servers → Backchannel or `OIDC_RESOURCES_JSON` `backchannelLogoutUris`. This also applies to the development demo and the portal's own resource. |
 | 14501 | invalid_target | One or more resources is not registered for this application |
 | 2400 | invalid_request | Frontend authentication flow cookie not found or expired |
 | 50040 | server_error | Internal server error occured during login, such as connection error with microsoft login / authentication endpoint |

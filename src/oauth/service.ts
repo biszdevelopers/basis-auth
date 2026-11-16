@@ -59,7 +59,9 @@ async function requireLoginResource(database: Pick<Database, "select">, audience
   if (!resource.backchannelLogoutUris.some((uri) => backchannelLogoutUriSchema.safeParse(uri).success)) {
     throw new OAuthError(
       "invalid_resource",
-      `Resource server "${audience}" requires at least one valid backchannel logout URL`,
+      `Resource server "${audience}" has no verified backchannel logout URL. ` +
+        "An administrator must add and verify at least one callback under " +
+        "Resource Servers -> Backchannel or OIDC_RESOURCES_JSON backchannelLogoutUris.",
       400,
       14408,
     );

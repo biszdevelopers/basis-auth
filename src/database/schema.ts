@@ -87,6 +87,7 @@ export const oidcClients = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
+    index("oidc_clients_resources_gin").using("gin", table.resources),
     check(
       "oidc_clients_filter_mode_check",
       sql`${table.filterMode} in ('whitelist', 'blacklist') or ${table.filterMode} is null`,
@@ -277,6 +278,8 @@ export const authorizationSessions = pgTable(
   (table) => [
     index("authorization_sessions_user_id_idx").on(table.userId),
     index("authorization_sessions_client_id_idx").on(table.clientId),
+    index("authorization_sessions_active_user_idx").on(table.userId).where(sql`${table.revokedAt} is null`),
+    index("authorization_sessions_active_client_idx").on(table.clientId).where(sql`${table.revokedAt} is null`),
   ],
 );
 

@@ -24,6 +24,7 @@ export async function recordAccessTokenRevocation(
       validAfter: sql`excluded.valid_after`,
       nextAttemptAt: sql`excluded.next_attempt_at`,
       deliveredAt: null,
+      deliveredUris: [],
     },
     where: sql`excluded.valid_after < ${accessTokenRevocations.validAfter}`,
   });
@@ -52,7 +53,8 @@ export function createAccessTokenRevocationDelivery(db: Database, keys: Pick<Key
         .where(eq(resourceServers.audience, event.audience));
       const uris = (resource?.uris ?? []).filter((uri) => backchannelLogoutUriSchema.safeParse(uri).success);
       if (!uris.length) return;
-      const pending = uris.filter((uri) => !event.deliveredUris.includes(uri));
+      const alreadyDelivered = new Set(event.deliveredUris);
+      const pending = uris.filter((uri) => !alreadyDelivered.has(uri));
       if (!pending.length) {
         await db.update(accessTokenRevocations).set({ deliveredAt: new Date() })
           .where(and(eq(accessTokenRevocations.jti, jti), eq(accessTokenRevocations.validAfter, event.validAfter)));
@@ -69,13 +71,12 @@ export function createAccessTokenRevocationDelivery(db: Database, keys: Pick<Key
         revocation_token: token,
       });
       const results = await Promise.all(pending.map((uri) => postBackchannel(uri, body)));
-      const deliveredUris = [...new Set([
-        ...event.deliveredUris,
-        ...pending.filter((_, index) => results[index]),
-      ])];
-      const allDelivered = uris.every((uri) => deliveredUris.includes(uri));
+      pending.forEach((uri, index) => {
+        if (results[index]) alreadyDelivered.add(uri);
+      });
+      const allDelivered = uris.every((uri) => alreadyDelivered.has(uri));
       await db.update(accessTokenRevocations).set({
-        deliveredUris,
+        deliveredUris: [...alreadyDelivered],
         ...(allDelivered ? { deliveredAt: new Date() } : {}),
       }).where(and(
         eq(accessTokenRevocations.jti, jti),

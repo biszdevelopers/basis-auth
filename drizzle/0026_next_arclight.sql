@@ -1,0 +1,1 @@
+CREATE INDEX "oidc_clients_resources_gin" ON "oidc_clients" USING gin ("resources");

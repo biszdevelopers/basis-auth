@@ -137,9 +137,116 @@ async function askYesNo(rl: Interface, question: string, defaultYes: boolean): P
 export type ListedClient = ClientDetail;
 
 export async function listClients(db: Database): Promise<ListedClient[]> {
-  const rows = await db.select({ clientId: oidcClients.clientId }).from(oidcClients);
-  const clients = await Promise.all(rows.map(({ clientId }) => getClientDetail(db, clientId)));
-  return clients.sort((a, b) => a.name.localeCompare(b.name));
+  const rows = await db.select().from(oidcClients);
+  if (!rows.length) return [];
+  const clientIds = rows.map((row) => row.clientId);
+  const ownerIds = [...new Set(rows.flatMap((row) => {
+    const metadata = row.metadata as Partial<StoredClientMetadata>;
+    return (metadata.owners ?? []).map((owner) => owner.id);
+  }))];
+  const [definitions, defaults, ownerUsers, grantCounts, userCounts, sessionCounts, clientOrganizations] = await Promise.all([
+    db
+      .select({ clientId: oidcPermissions.clientId, permission: oidcPermissions.permission, description: oidcPermissions.description })
+      .from(oidcPermissions)
+      .where(inArray(oidcPermissions.clientId, clientIds)),
+    db
+      .select({ clientId: defaultPermissions.applicationId, permission: defaultPermissions.permission })
+      .from(defaultPermissions)
+      .where(inArray(defaultPermissions.applicationId, clientIds)),
+    ownerIds.length
+      ? db
+          .select({ id: users.id, email: users.email, displayName: users.displayName })
+          .from(users)
+          .where(inArray(users.id, ownerIds))
+      : Promise.resolve([] as { id: string; email: string; displayName: string | null }[]),
+    db
+      .select({ clientId: userPermissions.applicationId, count: sql<number>`count(*)::int` })
+      .from(userPermissions)
+      .where(inArray(userPermissions.applicationId, clientIds))
+      .groupBy(userPermissions.applicationId),
+    db
+      .select({ clientId: userApplications.applicationId, count: sql<number>`count(*)::int` })
+      .from(userApplications)
+      .where(inArray(userApplications.applicationId, clientIds))
+      .groupBy(userApplications.applicationId),
+    db
+      .select({ clientId: authorizationSessions.clientId, count: sql<number>`count(*)::int` })
+      .from(authorizationSessions)
+      .where(and(
+        inArray(authorizationSessions.clientId, clientIds),
+        isNull(authorizationSessions.revokedAt),
+      ))
+      .groupBy(authorizationSessions.clientId),
+    db
+      .select({ clientId: oidcClientOrganizations.clientId, organizationId: organizations.organizationId })
+      .from(oidcClientOrganizations)
+      .innerJoin(organizations, eq(oidcClientOrganizations.organizationId, organizations.id))
+      .where(inArray(oidcClientOrganizations.clientId, clientIds)),
+  ]);
+
+  const definitionsByClient = new Map<string, PermissionDefinitions>();
+  for (const definition of definitions) {
+    const catalog = definitionsByClient.get(definition.clientId) ?? {};
+    catalog[definition.permission] = definition.description;
+    definitionsByClient.set(definition.clientId, catalog);
+  }
+  const defaultsByClient = new Map<string, string[]>();
+  for (const definition of defaults) {
+    const list = defaultsByClient.get(definition.clientId) ?? [];
+    list.push(definition.permission);
+    defaultsByClient.set(definition.clientId, list);
+  }
+  const ownerLabels = Object.fromEntries(
+    ownerUsers.map((user) => [user.id, user.displayName?.trim() || user.email]),
+  );
+  const countByClient = (items: { clientId: string; count: number }[]) =>
+    new Map(items.map((item) => [item.clientId, item.count]));
+  const grantCountsByClient = countByClient(grantCounts);
+  const userCountsByClient = countByClient(userCounts);
+  const sessionCountsByClient = countByClient(sessionCounts);
+  const organizationsByClient = new Map<string, string[]>();
+  for (const organization of clientOrganizations) {
+    const list = organizationsByClient.get(organization.clientId) ?? [];
+    list.push(organization.organizationId);
+    organizationsByClient.set(organization.clientId, list);
+  }
+
+  return rows.map((row) => {
+    const metadata = row.metadata as Partial<StoredClientMetadata>;
+    const scopes = metadata.scopes ?? [];
+    const owners = metadata.owners ?? [];
+    const ownerLabelsForClient: Record<string, string> = {};
+    for (const owner of owners) {
+      const label = ownerLabels[owner.id];
+      if (label) ownerLabelsForClient[owner.id] = label;
+    }
+    return {
+      clientId: row.clientId,
+      name: metadata.name || row.clientId,
+      public: metadata.public ?? row.secretHash === null,
+      disabled: metadata.disabled === true,
+      hasSecret: row.secretHash !== null,
+      redirectUris: metadata.redirectUris ?? [],
+      scopes,
+      resourceScopes: metadata.resourceScopes ?? Object.fromEntries(
+        (row.resources ?? []).map((resource) => [resource, scopes]),
+      ),
+      permissions: definitionsByClient.get(row.clientId) ?? (metadata.permissions as PermissionDefinitions | undefined) ?? {},
+      defaultPermissions: defaultsByClient.get(row.clientId) ?? [],
+      resources: row.resources ?? [],
+      requireConsent: row.requireConsent,
+      filterMode: row.filterMode ?? null,
+      filterContent: row.filterContent ?? [],
+      owners,
+      ownerLabels: ownerLabelsForClient,
+      organizationIds: organizationsByClient.get(row.clientId) ?? [],
+      permissionCatalogVersion: row.permissionCatalogVersion,
+      grantCount: grantCountsByClient.get(row.clientId) ?? 0,
+      userCount: userCountsByClient.get(row.clientId) ?? 0,
+      sessionCount: sessionCountsByClient.get(row.clientId) ?? 0,
+      updatedAt: row.updatedAt.toISOString(),
+    };
+  }).sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export async function deleteClientById(db: Database, clientId: string): Promise<string> {
@@ -234,6 +341,14 @@ export async function listResources(db: Database): Promise<ResourceDetail[]> {
   const clients = await db
     .select({ clientId: oidcClients.clientId, resources: oidcClients.resources })
     .from(oidcClients);
+  const clientsByAudience = new Map<string, string[]>();
+  for (const client of clients) {
+    for (const audience of client.resources ?? []) {
+      const list = clientsByAudience.get(audience) ?? [];
+      list.push(client.clientId);
+      clientsByAudience.set(audience, list);
+    }
+  }
   const creatorIds = [...new Set(resources.map((resource) => resource.createdBy).filter(Boolean))] as string[];
   const creators = creatorIds.length
     ? await db
@@ -253,10 +368,7 @@ export async function listResources(db: Database): Promise<ResourceDetail[]> {
     createdBy: resource.createdBy,
     createdByLabel: resource.createdBy ? creatorLabels.get(resource.createdBy) ?? null : null,
     updatedAt: resource.updatedAt.toISOString(),
-    clientIds: clients
-      .filter((client) => (client.resources ?? []).includes(resource.audience))
-      .map((client) => client.clientId)
-      .sort(),
+    clientIds: (clientsByAudience.get(resource.audience) ?? []).sort(),
   }));
 }
 
@@ -401,7 +513,12 @@ function parseScopes(value: string): string[] {
   const scopes = splitList(value);
   const invalid = scopes.filter((scope) => !/^[\x21\x23-\x5b\x5d-\x7e]+$/.test(scope));
   if (invalid.length) throw new Error(`Invalid OAuth scope(s): ${invalid.join(", ")}`);
-  const duplicates = scopes.filter((scope, index) => scopes.indexOf(scope) !== index);
+  const seen = new Set<string>();
+  const duplicates = scopes.filter((scope) => {
+    if (seen.has(scope)) return true;
+    seen.add(scope);
+    return false;
+  });
   if (duplicates.length) throw new Error(`Duplicate scope(s): ${duplicates.join(", ")}`);
   return scopes;
 }
@@ -427,13 +544,14 @@ async function promptAllowedResourceScopes(
   const allowed = new Map<string, string[]>();
   for (const audience of resources) {
     const registered = available.get(audience) ?? [];
+    const registeredSet = new Set(registered);
     const fallback = initial.get(audience) ?? (defaultToAllAvailable ? registered : []);
     process.stdout.write(
       `\n${audience}\n  registered scopes: ${registered.join(", ") || "(none)"}\n`,
     );
     for (;;) {
       const scopes = await promptScopes(rl, "Allowed scopes", fallback);
-      const unregistered = scopes.filter((scope) => !registered.includes(scope));
+      const unregistered = scopes.filter((scope) => !registeredSet.has(scope));
       if (unregistered.length) {
         process.stdout.write(
           `Not registered on this resource: ${unregistered.join(", ")}. Edit the resource scopes first.\n`,
@@ -1101,14 +1219,15 @@ async function confirmBackchannelUris(
     true,
   ))) return uris;
   const verifier = createBackchannelVerifier(db);
-  const verified: string[] = [];
-  const failed: string[] = [];
-  for (const uri of uris) {
-    process.stdout.write(`Sending action=test to ${uri} and waiting up to 10 seconds...\n`);
-    const result = await verifier.verifyDestination(audience, uri);
-    if (result === "verified") verified.push(uri);
-    else failed.push(`${uri} (${result})`);
-  }
+  process.stdout.write(`Sending action=test to ${uris.length} URL(s) and waiting up to 10 seconds...\n`);
+  const results = await Promise.all(uris.map(async (uri) => ({
+    uri,
+    result: await verifier.verifyDestination(audience, uri),
+  })));
+  const verified = results.filter((entry) => entry.result === "verified").map((entry) => entry.uri);
+  const failed = results
+    .filter((entry) => entry.result !== "verified")
+    .map((entry) => `${entry.uri} (${entry.result})`);
   if (!failed.length) {
     process.stdout.write("All webhooks verified.\n");
     return uris;
@@ -1187,16 +1306,18 @@ export async function runEditResourceFlow(db: Database): Promise<void> {
     const name = await ask(rl, "Display name", selected.name);
     const clientRows = await db
       .select({ clientId: oidcClients.clientId, resources: oidcClients.resources, metadata: oidcClients.metadata })
-      .from(oidcClients);
+      .from(oidcClients)
+      .where(sql`${oidcClients.resources} @> ${JSON.stringify([selected.audience])}::jsonb`);
     let scopes: string[] = selected.scopes;
     for (;;) {
       const candidate = await promptScopes(rl, "Resource scopes", scopes);
-      const removed = selected.scopes.filter((scope) => !candidate.includes(scope));
+      const candidateSet = new Set(candidate);
+      const removed = selected.scopes.filter((scope) => !candidateSet.has(scope));
+      const removedSet = new Set(removed);
       const conflicts = clientRows.flatMap((row) => {
-        if (!(row.resources ?? []).includes(selected.audience)) return [];
         const metadata = row.metadata as Partial<StoredClientMetadata>;
         const allowed = metadata.resourceScopes?.[selected.audience] ?? metadata.scopes ?? [];
-        const affected = allowed.filter((scope) => removed.includes(scope));
+        const affected = allowed.filter((scope) => removedSet.has(scope));
         return affected.length ? [`${row.clientId} (${affected.join(", ")})`] : [];
       });
       scopes = candidate;

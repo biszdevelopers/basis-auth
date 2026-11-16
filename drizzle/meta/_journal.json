@@ -183,6 +183,20 @@
       "when": 1794786994607,
       "tag": "0025_wandering_zaladane",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1794787490234,
+      "tag": "0026_next_arclight",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1794787579459,
+      "tag": "0027_unusual_avengers",
+      "breakpoints": true
     }
   ]
 }
