@@ -222,7 +222,13 @@ export function createInternalApp(
       }),
       z.object({ action: z.literal("remove"), scope: z.string().min(1) }),
     ]);
-    const logoutUriSchema = z.object({ backchannelLogoutUri: backchannelLogoutUriSchema });
+    const logoutUrisSchema = z.object({
+      backchannelLogoutUris: z.array(backchannelLogoutUriSchema).optional(),
+      backchannelLogoutUri: backchannelLogoutUriSchema.nullable().optional(),
+    }).refine(
+      (value) => value.backchannelLogoutUris !== undefined || value.backchannelLogoutUri !== undefined,
+      "Provide backchannelLogoutUris or backchannelLogoutUri",
+    );
     const backchannelValidationSchema = z.object({
       nonce: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
       challenge_hash: z.string().regex(/^[a-f\d]{64}$/i),
@@ -257,16 +263,20 @@ export function createInternalApp(
       management.applications.rotateResourceSecret(c.req.param("resourceId"), who),
     ));
     app.get("/internal/resources/:resourceId/backchannel/logout", (c) => managed(c, async (who) => {
-      const { backchannelLogoutUri } = await management.applications.resourceDetail(c.req.param("resourceId"), who);
-      return { backchannelLogoutUri };
+      const { backchannelLogoutUris } = await management.applications.resourceDetail(c.req.param("resourceId"), who);
+      return { backchannelLogoutUris, backchannelLogoutUri: backchannelLogoutUris[0] ?? null };
     }));
     app.put("/internal/resources/:resourceId/backchannel/logout", (c) => managed(c, async (who) => {
-      const { backchannelLogoutUri } = logoutUriSchema.parse(await c.req.json());
-      return management.applications.setResourceLogoutUri(c.req.param("resourceId"), who, backchannelLogoutUri);
+      const body = logoutUrisSchema.parse(await c.req.json());
+      const uris = body.backchannelLogoutUris
+        ?? (body.backchannelLogoutUri === null ? [] : [body.backchannelLogoutUri!]);
+      const result = await management.applications.setResourceLogoutUris(c.req.param("resourceId"), who, uris);
+      return { backchannelLogoutUris: result.backchannelLogoutUris, backchannelLogoutUri: result.backchannelLogoutUris[0] ?? null };
     }));
-    app.delete("/internal/resources/:resourceId/backchannel/logout", (c) => managed(c, (who) =>
-      management.applications.setResourceLogoutUri(c.req.param("resourceId"), who, null),
-    ));
+    app.delete("/internal/resources/:resourceId/backchannel/logout", (c) => managed(c, async (who) => {
+      const result = await management.applications.setResourceLogoutUris(c.req.param("resourceId"), who, []);
+      return { backchannelLogoutUris: result.backchannelLogoutUris, backchannelLogoutUri: result.backchannelLogoutUris[0] ?? null };
+    }));
     app.delete("/internal/resources/:resourceId", (c) => managed(c, async (who) => {
       const resourceId = c.req.param("resourceId");
       await management.applications.deleteResource(resourceId, who);

@@ -14,7 +14,7 @@ const issuer = "https://auth.example.test";
 const uri = "https://projects.example.test/logout?source=auth";
 const internalToken = "i".repeat(32);
 
-function logoutApp(resources: { uri: string | null }[], issueLogoutToken = vi.fn().mockResolvedValue("token")) {
+function logoutApp(resources: { uris: string[] }[], issueLogoutToken = vi.fn().mockResolvedValue("token")) {
   const limit = vi.fn().mockResolvedValue(resources);
   const db = {
     select: () => ({ from: () => ({ where: () => ({ limit }) }) }),
@@ -41,7 +41,7 @@ describe("internal back-channel logout", () => {
     const { privateKey } = await generateKeyPair("RS256", { extractable: true });
     const jwk = { ...await exportJWK(privateKey), kid: "test" };
     const keys = await createKeyService({ issuer, jwks: { keys: [jwk] } } as AppConfig, {} as IdentityService);
-    const { app } = logoutApp([{ uri }], vi.fn(keys.issueLogoutToken));
+    const { app } = logoutApp([{ uris: [uri] }], vi.fn(keys.issueLogoutToken));
     const send = vi.fn<typeof fetch>().mockResolvedValue(new Response(null, { status: 204 }));
     vi.stubGlobal("fetch", send);
 
@@ -65,8 +65,19 @@ describe("internal back-channel logout", () => {
     expect(payload).not.toHaveProperty("nonce");
   });
 
+  it("fans out the logout token to every configured webhook", async () => {
+    const second = "https://projects.example.test/backup-logout";
+    const { app } = logoutApp([{ uris: [uri, second] }]);
+    const send = vi.fn<typeof fetch>().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", send);
+
+    expect((await requestLogout(app)).status).toBe(204);
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls.map(([target]) => String(target))).toEqual([uri, second]);
+  });
+
   it("requires the internal bearer token and a resource audience", async () => {
-    const { app, limit } = logoutApp([{ uri }]);
+    const { app, limit } = logoutApp([{ uris: [uri] }]);
     expect((await requestLogout(app, false)).status).toBe(401);
     expect((await requestLogout(app, true, {})).status).toBe(400);
     expect((await requestLogout(app, true, { audience: "urn:basis:api:other" })).status).toBe(403);
@@ -75,8 +86,8 @@ describe("internal back-channel logout", () => {
 
   it.each([
     { resources: [], status: 404 },
-    { resources: [{ uri: null }], status: 409 },
-    { resources: [{ uri: "http://projects.example.test/logout" }], status: 502 },
+    { resources: [{ uris: [] }], status: 409 },
+    { resources: [{ uris: ["http://projects.example.test/logout"] }], status: 409 },
   ])("reports status $status without signing for an unavailable callback", async ({ resources, status }) => {
     const { app, issueLogoutToken } = logoutApp(resources);
     expect((await requestLogout(app)).status).toBe(status);
@@ -84,7 +95,7 @@ describe("internal back-channel logout", () => {
   });
 
   it("reports receiver errors and network failures", async () => {
-    const { app } = logoutApp([{ uri }]);
+    const { app } = logoutApp([{ uris: [uri] }]);
     const send = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(new Response(null, { status: 400 }))
       .mockRejectedValueOnce(new Error("network failure"));
@@ -98,8 +109,11 @@ describe("internal back-channel logout", () => {
 
 describe("back-channel logout resource configuration", () => {
   it("accepts HTTPS and localhost HTTP endpoints without credentials or fragments", () => {
+    expect(resourceSchema.parse({ audience, backchannelLogoutUris: [uri] }).backchannelLogoutUris).toEqual([uri]);
     expect(resourceSchema.parse({ audience, backchannelLogoutUri: uri }).backchannelLogoutUri).toBe(uri);
     const localhost = "http://localhost:4321/logout";
+    expect(resourceSchema.parse({ audience, backchannelLogoutUris: [uri, localhost] }).backchannelLogoutUris)
+      .toEqual([uri, localhost]);
     expect(resourceSchema.parse({ audience, backchannelLogoutUri: localhost }).backchannelLogoutUri).toBe(localhost);
     expect(resourceSchema.parse({ audience, backchannelLogoutUri: null }).backchannelLogoutUri).toBeNull();
     for (const value of [
@@ -113,6 +127,7 @@ describe("back-channel logout resource configuration", () => {
       `${uri}#`,
     ]) {
       expect(resourceSchema.safeParse({ audience, backchannelLogoutUri: value }).success).toBe(false);
+      expect(resourceSchema.safeParse({ audience, backchannelLogoutUris: [value] }).success).toBe(false);
     }
   });
 });

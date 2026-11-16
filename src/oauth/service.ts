@@ -46,7 +46,7 @@ const identityScopes = publicScopes;
 async function requireLoginResource(database: Pick<Database, "select">, audience: string) {
   const [resource] = await database.select({
     scopes: resourceServers.scopes,
-    backchannelLogoutUri: resourceServers.backchannelLogoutUri,
+    backchannelLogoutUris: resourceServers.backchannelLogoutUris,
   }).from(resourceServers).where(eq(resourceServers.audience, audience)).limit(1);
   if (!resource) {
     throw new OAuthError(
@@ -56,10 +56,10 @@ async function requireLoginResource(database: Pick<Database, "select">, audience
       14407,
     );
   }
-  if (!backchannelLogoutUriSchema.safeParse(resource.backchannelLogoutUri).success) {
+  if (!resource.backchannelLogoutUris.some((uri) => backchannelLogoutUriSchema.safeParse(uri).success)) {
     throw new OAuthError(
       "invalid_resource",
-      `Resource server "${audience}" requires a valid backchannel logout URL`,
+      `Resource server "${audience}" requires at least one valid backchannel logout URL`,
       400,
       14408,
     );

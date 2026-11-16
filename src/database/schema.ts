@@ -179,7 +179,7 @@ export const resourceServers = pgTable("resource_servers", {
   scopes: jsonb("scopes").notNull().$type<string[]>(),
   secretHash: text("secret_hash").notNull(),
   createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
-  backchannelLogoutUri: text("backchannel_logout_uri"),
+  backchannelLogoutUris: jsonb("backchannel_logout_uris").notNull().default([]).$type<string[]>(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -305,6 +305,7 @@ export const accessTokenRevocations = pgTable(
     expiresAt: timestamp("expires_at", { withTimezone: true }),
     nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
     deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    deliveredUris: jsonb("delivered_uris").notNull().default([]).$type<string[]>(),
   },
   (table) => [
     index("access_token_revocations_pending_idx").on(table.nextAttemptAt).where(sql`${table.deliveredAt} is null`),

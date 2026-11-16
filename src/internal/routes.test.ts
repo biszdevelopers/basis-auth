@@ -338,31 +338,37 @@ describe("internal resource HTTP API", () => {
     "content-type": "application/json",
   };
 
-  it("reads, saves, and clears the webhook using an encoded resource audience", async () => {
-    const backchannelLogoutUri = "https://projects.example.test/logout";
-    const resourceDetail = vi.fn().mockResolvedValue({ backchannelLogoutUri: null });
-    const setResourceLogoutUri = vi.fn()
-      .mockResolvedValueOnce({ backchannelLogoutUri })
-      .mockResolvedValueOnce({ backchannelLogoutUri: null });
+  it("reads, saves, and clears multiple webhooks using an encoded resource audience", async () => {
+    const backchannelLogoutUris = [
+      "https://projects.example.test/logout",
+      "https://projects.example.test/backup-logout",
+    ];
+    const resourceDetail = vi.fn().mockResolvedValue({ backchannelLogoutUris: [] });
+    const setResourceLogoutUris = vi.fn()
+      .mockResolvedValueOnce({ backchannelLogoutUris })
+      .mockResolvedValueOnce({ backchannelLogoutUris: [] });
     const app = managementApp(
-      { resourceDetail, setResourceLogoutUri } as unknown as InternalApplicationService,
+      { resourceDetail, setResourceLogoutUris } as unknown as InternalApplicationService,
       vi.fn().mockResolvedValue({ sub: user.id, client_id: "portal-client", scope: "noesis.access", permissions }),
     );
 
     const get = await app.request(path, { headers });
-    const put = await app.request(path, { method: "PUT", headers, body: JSON.stringify({ backchannelLogoutUri }) });
+    const put = await app.request(path, { method: "PUT", headers, body: JSON.stringify({ backchannelLogoutUris }) });
     const remove = await app.request(path, { method: "DELETE", headers });
 
     expect(get.status).toBe(200);
-    expect(await get.json()).toEqual({ backchannelLogoutUri: null });
+    expect(await get.json()).toEqual({ backchannelLogoutUris: [], backchannelLogoutUri: null });
     expect(put.status).toBe(200);
-    expect(await put.json()).toEqual({ backchannelLogoutUri });
+    expect(await put.json()).toEqual({
+      backchannelLogoutUris,
+      backchannelLogoutUri: backchannelLogoutUris[0],
+    });
     expect(remove.status).toBe(200);
-    expect(await remove.json()).toEqual({ backchannelLogoutUri: null });
+    expect(await remove.json()).toEqual({ backchannelLogoutUris: [], backchannelLogoutUri: null });
     expect(resourceDetail).toHaveBeenCalledWith(resourceId, { id: user.id, permissions });
-    expect(setResourceLogoutUri.mock.calls).toEqual([
-      [resourceId, { id: user.id, permissions }, backchannelLogoutUri],
-      [resourceId, { id: user.id, permissions }, null],
+    expect(setResourceLogoutUris.mock.calls).toEqual([
+      [resourceId, { id: user.id, permissions }, backchannelLogoutUris],
+      [resourceId, { id: user.id, permissions }, []],
     ]);
   });
 
@@ -395,14 +401,14 @@ describe("internal resource HTTP API", () => {
   it.each(["http://projects.example.test/logout", "https://a:b@projects.example.test/logout", "https://projects.example.test/logout#x"])(
     "rejects an unsupported callback %s before updating storage",
     async (backchannelLogoutUri) => {
-      const setResourceLogoutUri = vi.fn();
+      const setResourceLogoutUris = vi.fn();
       const app = managementApp(
-        { setResourceLogoutUri } as unknown as InternalApplicationService,
+        { setResourceLogoutUris } as unknown as InternalApplicationService,
         vi.fn().mockResolvedValue({ sub: user.id, client_id: "portal-client", scope: "noesis.access", permissions }),
       );
       const response = await app.request(path, { method: "PUT", headers, body: JSON.stringify({ backchannelLogoutUri }) });
       expect(response.status).toBe(400);
-      expect(setResourceLogoutUri).not.toHaveBeenCalled();
+      expect(setResourceLogoutUris).not.toHaveBeenCalled();
     },
   );
 });

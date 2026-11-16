@@ -1,11 +1,13 @@
 # Implement a backchannel logout receiver
 
-Register the resource audience with Basis Auth and configure the receiver with the resource's current secret and the Basis Auth internal API URL. In the portal, open **Resource Servers → Backchannel** for that audience and enter the receiver's URL. Use HTTPS or an HTTP URL whose hostname is exactly `localhost`, such as `http://localhost:4321/logout`. The URL must be reachable from Basis Auth. The receiver must also be able to reach Basis Auth's internal listener.
+Register the resource audience with Basis Auth and configure the receiver with the resource's current secret and the Basis Auth internal API URL. A resource can have more than one callback URL; logout and access-token revocation events are delivered to every verified URL. In the portal, open **Resource Servers → Backchannel** for that audience and enter the receiver URLs one at a time. Use HTTPS or an HTTP URL whose hostname is exactly `localhost`, such as `http://localhost:4321/logout`. Every URL must be reachable from Basis Auth. The receiver must also be able to reach Basis Auth's internal listener.
 
 ## Verify the webhook
 
-1. When you save the URL, Basis Auth sends a `POST` to it with `Content-Type: application/x-www-form-urlencoded`. The body contains `action=test`, a single-use `nonce`, and a random `challenge`. Preserve both values exactly as received.
-2. Return HTTP `202 Accepted` promptly. Then send the proof to `POST /internal/backchannel/validate`. The entire exchange has a 10-second deadline.
+Each URL is verified independently. The exchange has a 10-second deadline.
+
+1. When you save a URL, Basis Auth sends a `POST` to it with `Content-Type: application/x-www-form-urlencoded`. The body contains `action=test`, a single-use `nonce`, and a random `challenge`. Preserve both values exactly as received.
+2. Return HTTP `202 Accepted` promptly. Then send the proof to `POST /internal/backchannel/validate`.
 3. Send the original `nonce` and `challenge_hash`. Compute the hash as HMAC-SHA256 with the current resource secret as the key and the challenge string as the message. Encode the digest as 64 hexadecimal characters. The callback accepts JSON or form data.
 
 Both the nonce and challenge are 43-character base64url strings. Use the challenge as received in the HMAC message, including its original casing.
@@ -43,19 +45,19 @@ async function validateWebhook({ internalApiUrl, audience, resourceSecret, nonce
 | `401` | `{"error":"unauthorized"}` | The resource credentials are missing or invalid. |
 | `408` | `{"error":"timeout"}` | The challenge expired. Save the webhook URL again to start a fresh verification. |
 
-Basis Auth saves the URL after it receives both the receiver's `202` and valid proof. The previous URL stays active if verification fails. Clearing the URL takes effect immediately. A new URL configured through `OIDC_RESOURCES_JSON` goes through the same check after the internal listener starts.
+Basis Auth saves a URL after it receives both the receiver's `202` and valid proof. The previous list stays active if verification fails. Clearing the list takes effect immediately. URLs configured through `OIDC_RESOURCES_JSON` go through the same checks after the internal listener starts.
 
-Authorization-code sign-in requires a valid saved webhook for the requested resource. A missing or invalid URL produces `14408: invalid_resource`. To bootstrap the portal's own resource before you can sign in, configure its webhook through `OIDC_RESOURCES_JSON` and start the receiver with its resource secret.
+Authorization-code sign-in requires at least one valid saved webhook for the requested resource. A missing or invalid list produces `14408: invalid_resource`. To bootstrap the portal's own resource before you can sign in, configure its webhook through `OIDC_RESOURCES_JSON` and start the receiver with its resource secret.
 
 ## Receive logout events
 
-When Basis Auth delivers a logout, it sends a form-encoded `POST` to the verified URL with a `logout_token` field. Route `action=test` requests to the verification flow and `logout_token` requests to session termination.
+When Basis Auth delivers a logout, it sends a form-encoded `POST` to every verified URL with a `logout_token` field. Route `action=test` requests to the verification flow and `logout_token` requests to session termination.
 
 Verify the logout token signature against Basis Auth's `/oauth/jwks`. Require `alg=RS256`, `typ=logout+jwt`, the configured issuer, the resource audience, and a valid expiration. Basis Auth issues these tokens for two minutes and includes `sub`, `iat`, `jti`, and the `http://schemas.openid.net/event/backchannel-logout` event. End the local sessions for the verified `sub` and return `200` or `204`.
 
 ## Receive access-token revocations
 
-Basis Auth posts to the same URL when an access token is replaced by refresh or explicitly revoked. Expired access tokens are rejected during normal JWT validation. A refresh for an audience without a valid saved URL fails with `14408: invalid_resource` before consuming the refresh token.
+Basis Auth posts to every configured URL when an access token is replaced by refresh or explicitly revoked. Expired access tokens are rejected during normal JWT validation. A refresh for an audience without a valid saved URL fails with `14408: invalid_resource` before consuming the refresh token.
 
 The form body contains `action=revoke_access_token`, the revoked access token's `jti`, `valid_after` as a Unix timestamp in seconds, and a signed `revocation_token`. `ACCESS_TOKEN_REVOCATION_GRACE_SECONDS` controls how far in the future `valid_after` is set and defaults to `0`.
 

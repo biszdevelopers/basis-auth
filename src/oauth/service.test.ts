@@ -269,6 +269,7 @@ describe("authorization resource check", () => {
     [null, false],
     ["http://api.example.test/logout", false],
   ] as const)("checks the logout URL %s even for public OIDC scopes", async (backchannelLogoutUri, allowed) => {
+    const backchannelLogoutUris = backchannelLogoutUri === null ? [] : [backchannelLogoutUri];
     const publicScopeClient = {
       ...clientRow,
       resources: ["urn:basis:api:test"],
@@ -280,7 +281,7 @@ describe("authorization resource check", () => {
         from: (table: unknown) => table === oidcClientOrganizations ? organizationQuery() : ({
           where: () => ({
             limit: () => table === resourceServers
-              ? [{ audience: "urn:basis:api:test", scopes: [], backchannelLogoutUri }]
+              ? [{ audience: "urn:basis:api:test", scopes: [], backchannelLogoutUris }]
               : { prepare: () => ({ execute: clientExecute }) },
           }),
         }),
@@ -327,7 +328,7 @@ describe("authorization resource check", () => {
         from: (table: unknown) => table === oidcClientOrganizations ? organizationQuery() : ({
           where: () => ({
             limit: () => table === resourceServers
-              ? [{ audience: "urn:basis:api:test", scopes: [], backchannelLogoutUri: "https://api.example.test/logout" }]
+              ? [{ audience: "urn:basis:api:test", scopes: [], backchannelLogoutUris: ["https://api.example.test/logout"] }]
               : { prepare: () => ({ execute: clientExecute }) },
           }),
         }),
@@ -380,7 +381,7 @@ describe("authorization resource check", () => {
         from: (table: unknown) => table === oidcClientOrganizations ? organizationQuery() : ({
           where: () => ({
             limit: () => table === resourceServers
-              ? [{ audience: "urn:basis:api:test", scopes: [], backchannelLogoutUri: "https://api.example.test/logout" }]
+              ? [{ audience: "urn:basis:api:test", scopes: [], backchannelLogoutUris: ["https://api.example.test/logout"] }]
               : { prepare: () => ({ execute: clientExecute }) },
           }),
         }),

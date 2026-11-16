@@ -2,8 +2,9 @@ import "dotenv/config";
 import { randomBytes } from "node:crypto";
 import { stdin as input, stdout as output } from "node:process";
 import { createInterface, type Interface } from "node:readline/promises";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import {
+  backchannelLogoutUriSchema,
   clientInputSchema,
   DEFAULT_ORGANIZATION_ID,
   isEphemeralLocalhostRedirectUri,
@@ -12,6 +13,7 @@ import {
   type PermissionDefinitions,
 } from "../src/config.js";
 import { createDatabase, type Database } from "../src/database/client.js";
+import { createBackchannelVerifier } from "../src/internal/backchannel.js";
 import {
   hashClientSecret,
   hashNewResourceSecret,
@@ -33,6 +35,7 @@ import {
   resourceServers,
   userApplications,
   userPermissions,
+  users,
 } from "../src/database/schema.js";
 import { databaseIdentity } from "../src/serverIdentity.js";
 
@@ -79,6 +82,47 @@ function parsePermissionDefinitions(value: string): PermissionDefinitions {
   }
 }
 
+async function promptPermissionDefinitions(
+  rl: Interface,
+  initial: PermissionDefinitions,
+): Promise<PermissionDefinitions> {
+  for (;;) {
+    try {
+      return parsePermissionDefinitions(
+        await ask(
+          rl,
+          "Permission definitions (JSON object mapping permission names to descriptions)",
+          JSON.stringify(initial),
+        ),
+      );
+    } catch (error) {
+      process.stdout.write(`${error instanceof Error ? error.message : "Invalid permissions"}\n`);
+    }
+  }
+}
+
+async function promptDefaultPermissions(
+  rl: Interface,
+  permissions: PermissionDefinitions,
+  initial: string[],
+): Promise<string[]> {
+  const defined = Object.keys(permissions);
+  if (!defined.length) return [];
+  for (;;) {
+    const selected = parsePermissionSelection(await ask(
+      rl,
+      `Default permissions (comma-separated, available: ${defined.join(", ")}, "none" clears)`,
+      initial.join(", "),
+    ));
+    const invalid = selected.filter((permission) => !defined.includes(permission));
+    if (invalid.length) {
+      process.stdout.write(`Not in the permission catalog: ${invalid.join(", ")}\n`);
+      continue;
+    }
+    return selected;
+  }
+}
+
 async function ask(rl: Interface, question: string, defaultValue = ""): Promise<string> {
   const answer = (await rl.question(defaultValue ? `${question} [${defaultValue}]: ` : `${question}: `)).trim();
   return answer || defaultValue;
@@ -107,22 +151,46 @@ export async function deleteClientById(db: Database, clientId: string): Promise<
   return removed[0]!.clientId;
 }
 
-export function printClients(clients: ListedClient[], known: Set<string>): void {
+export function printClients(clients: ListedClient[], resources: Map<string, ResourceDetail>): void {
   if (!clients.length) {
     process.stdout.write("No clients registered.\n");
     return;
   }
   clients.forEach((client, index) => {
     process.stdout.write(
-      `${index + 1}) ${client.name} (${client.clientId})${client.public ? " [public]" : ""}${client.disabled ? " [disabled]" : ""}\n`,
+      `${index + 1}) ${client.name} (${client.clientId})${client.public ? " [public]" : " [confidential]"}${client.disabled ? " [disabled]" : ""}\n`,
     );
-    process.stdout.write(`   secret: ${client.hasSecret ? "set (hash only)" : "none"}\n`);
-    process.stdout.write(`   redirects: ${client.redirectUris.join(", ") || "(none)"}\n`);
-    process.stdout.write(`   resources: ${client.resources.join(", ") || "(none)"}\n`);
-    process.stdout.write(`   scopes: ${client.scopes.join(", ") || "(none)"}\n`);
+    process.stdout.write(`   client id: ${client.clientId}\n`);
+    process.stdout.write(`   type: ${client.public ? "public (PKCE, no secret)" : "confidential (client secret required)"}\n`);
+    process.stdout.write(
+      `   secret: ${client.hasSecret ? "set (scrypt hash; the value is never shown)" : "none"}\n`,
+    );
+    process.stdout.write(`   redirect uris: ${client.redirectUris.join(", ") || "(none)"}\n`);
+    process.stdout.write("   resources:\n");
+    if (!client.resources.length) process.stdout.write("     (none)\n");
+    for (const audience of client.resources) {
+      const resource = resources.get(audience);
+      const allowed = client.resourceScopes[audience] ?? [];
+      process.stdout.write(
+        `     - ${audience}${resource ? "" : " [MISSING RESOURCE SERVER]"}\n`,
+      );
+      process.stdout.write(`       allowed scopes: ${allowed.join(", ") || "(none)"}\n`);
+      if (resource) {
+        process.stdout.write(`       resource name: ${resource.name}\n`);
+        process.stdout.write(`       resource scopes: ${resource.scopes.join(", ") || "(none)"}\n`);
+        process.stdout.write(
+          `       backchannel logout: ${resource.backchannelLogoutUris.join(", ") || "(not configured)"}\n`,
+        );
+        process.stdout.write(`       resource secret: ${resource.hasSecret ? "set" : "none"}\n`);
+      }
+    }
+    process.stdout.write(`   resource scopes (legacy flat list): ${client.scopes.join(", ") || "(none)"}\n`);
     const permissions = Object.entries(client.permissions);
     process.stdout.write(
       `   permission definitions: ${permissions.length ? permissions.map(([permission, description]) => `${permission} (${description})`).join(", ") : "(none)"}\n`,
+    );
+    process.stdout.write(
+      `   default permissions: ${client.defaultPermissions.join(", ") || "(none)"}\n`,
     );
     process.stdout.write(`   consent: ${client.requireConsent ? "shown" : "skipped"}\n`);
     process.stdout.write(
@@ -130,21 +198,90 @@ export function printClients(clients: ListedClient[], known: Set<string>): void 
     );
     process.stdout.write(`   organizations: ${client.organizationIds.join(", ") || "(none)"}\n`);
     process.stdout.write(
-      `   owners: ${client.owners.map((owner) => `${owner.id} (${owner.role})`).join(", ") || "(none)"}\n`,
+      `   owners: ${client.owners.map((owner) => {
+        const label = client.ownerLabels[owner.id];
+        return `${owner.id} (${owner.role}${label ? `, ${label}` : ""})`;
+      }).join(", ") || "(none)"}\n`,
     );
-    process.stdout.write(`   updated: ${client.updatedAt}\n`);
-    const missing = client.resources.filter((audience) => !known.has(audience));
+    process.stdout.write(
+      `   permission catalog version: ${client.permissionCatalogVersion}; ` +
+        `users: ${client.userCount}; grants: ${client.grantCount}; active sessions: ${client.sessionCount}\n`,
+    );
+    process.stdout.write(`   created/updated: ${client.updatedAt}\n`);
+    const missing = client.resources.filter((audience) => !resources.has(audience));
     if (missing.length) {
       process.stdout.write(
-        `   WARNING: not registered as resource servers: ${missing.join(", ")} — re-save via Edit to register live\n`,
+        `   WARNING: not registered as resource servers: ${missing.join(", ")} — add them in Resources or re-save via Edit\n`,
       );
     }
   });
 }
 
-async function resourceAudiences(db: Database): Promise<Set<string>> {
-  const rows = await db.select({ audience: resourceServers.audience }).from(resourceServers);
-  return new Set(rows.map((row) => row.audience));
+export interface ResourceDetail {
+  audience: string;
+  name: string;
+  scopes: string[];
+  hasSecret: boolean;
+  backchannelLogoutUris: string[];
+  createdBy: string | null;
+  createdByLabel: string | null;
+  updatedAt: string;
+  clientIds: string[];
+}
+
+export async function listResources(db: Database): Promise<ResourceDetail[]> {
+  const resources = await db.select().from(resourceServers).orderBy(resourceServers.audience);
+  const clients = await db
+    .select({ clientId: oidcClients.clientId, resources: oidcClients.resources })
+    .from(oidcClients);
+  const creatorIds = [...new Set(resources.map((resource) => resource.createdBy).filter(Boolean))] as string[];
+  const creators = creatorIds.length
+    ? await db
+        .select({ id: users.id, email: users.email, displayName: users.displayName })
+        .from(users)
+        .where(inArray(users.id, creatorIds))
+    : [];
+  const creatorLabels = new Map(
+    creators.map((user) => [user.id, user.displayName?.trim() || user.email]),
+  );
+  return resources.map((resource) => ({
+    audience: resource.audience,
+    name: resource.name,
+    scopes: resource.scopes,
+    hasSecret: Boolean(resource.secretHash),
+    backchannelLogoutUris: resource.backchannelLogoutUris,
+    createdBy: resource.createdBy,
+    createdByLabel: resource.createdBy ? creatorLabels.get(resource.createdBy) ?? null : null,
+    updatedAt: resource.updatedAt.toISOString(),
+    clientIds: clients
+      .filter((client) => (client.resources ?? []).includes(resource.audience))
+      .map((client) => client.clientId)
+      .sort(),
+  }));
+}
+
+export function printResources(resources: ResourceDetail[]): void {
+  if (!resources.length) {
+    process.stdout.write("No resources registered.\n");
+    return;
+  }
+  resources.forEach((resource, index) => {
+    process.stdout.write(`${index + 1}) ${resource.name} (${resource.audience})\n`);
+    process.stdout.write(`   scopes: ${resource.scopes.join(", ") || "(none)"}\n`);
+    process.stdout.write(
+      `   backchannel logout: ${resource.backchannelLogoutUris.join(", ") || "(not configured)"}\n`,
+    );
+    process.stdout.write(
+      `   secret: ${resource.hasSecret ? "set (scrypt hash; the value is never shown)" : "none"}\n`,
+    );
+    process.stdout.write(
+      `   created by: ${resource.createdBy ? `${resource.createdBy}${resource.createdByLabel ? ` (${resource.createdByLabel})` : ""}` : "(unknown)"}\n`,
+    );
+    process.stdout.write(
+      `   clients: ${resource.clientIds.length ? resource.clientIds.join(", ") : "(none)"}\n`,
+    );
+    process.stdout.write(`   updated: ${resource.updatedAt}\n`);
+  });
 }
 
 // A client referencing an unregistered audience fails authorize with
@@ -173,10 +310,14 @@ export async function saveClient(
   db: Database,
   input: Omit<ClientSeed, "clientId">,
   resourceScopes: Map<string, string[]> = new Map(),
+  resourceDefinitions: Map<string, string[]> = new Map(),
 ): Promise<ClientSeed> {
   await ensureResourcesRegistered(
     db,
-    input.resources.map((audience) => ({ audience, scopes: resourceScopes.get(audience) ?? [] })),
+    input.resources.map((audience) => ({
+      audience,
+      scopes: resourceDefinitions.get(audience) ?? resourceScopes.get(audience) ?? [],
+    })),
   );
   const client: ClientSeed = { ...input, clientId: crypto.randomUUID() };
   await seedConfiguration(db, [client], []);
@@ -251,33 +392,101 @@ async function promptMissingResourceScopes(
   for (const audience of resources) {
     if (known.has(audience)) continue;
     process.stdout.write(`Resource ${audience} is not registered yet and will be created live.\n`);
-    scopes.set(audience, splitList(await ask(rl, `Scopes for ${audience} (comma-separated, blank = none)`)));
+    scopes.set(audience, await promptScopes(rl, `Scopes for ${audience}`, []));
   }
   return scopes;
 }
 
-function printClientSummary(input: {
-  clientId?: string;
-  name?: string;
-  public: boolean;
-  disabled?: boolean;
-  redirectUris: string[];
-  resources: string[];
-  scopes: string[];
-  permissions: PermissionDefinitions;
-  requireConsent: boolean;
-  filterMode: "whitelist" | "blacklist" | null;
-  filterContent: string[];
-  organizationIds: string[];
-}): void {
+function parseScopes(value: string): string[] {
+  const scopes = splitList(value);
+  const invalid = scopes.filter((scope) => !/^[\x21\x23-\x5b\x5d-\x7e]+$/.test(scope));
+  if (invalid.length) throw new Error(`Invalid OAuth scope(s): ${invalid.join(", ")}`);
+  const duplicates = scopes.filter((scope, index) => scopes.indexOf(scope) !== index);
+  if (duplicates.length) throw new Error(`Duplicate scope(s): ${duplicates.join(", ")}`);
+  return scopes;
+}
+
+async function promptScopes(rl: Interface, label: string, initial: string[]): Promise<string[]> {
+  for (;;) {
+    const raw = await ask(rl, `${label} (comma-separated, blank = none, "none" clears)`, initial.join(", "));
+    try {
+      return raw.toLowerCase() === "none" ? [] : parseScopes(raw);
+    } catch (error) {
+      process.stdout.write(`${error instanceof Error ? error.message : "Invalid scopes"}\n`);
+    }
+  }
+}
+
+async function promptAllowedResourceScopes(
+  rl: Interface,
+  resources: string[],
+  available: Map<string, string[]>,
+  initial: Map<string, string[]>,
+  defaultToAllAvailable: boolean,
+): Promise<Map<string, string[]>> {
+  const allowed = new Map<string, string[]>();
+  for (const audience of resources) {
+    const registered = available.get(audience) ?? [];
+    const fallback = initial.get(audience) ?? (defaultToAllAvailable ? registered : []);
+    process.stdout.write(
+      `\n${audience}\n  registered scopes: ${registered.join(", ") || "(none)"}\n`,
+    );
+    for (;;) {
+      const scopes = await promptScopes(rl, "Allowed scopes", fallback);
+      const unregistered = scopes.filter((scope) => !registered.includes(scope));
+      if (unregistered.length) {
+        process.stdout.write(
+          `Not registered on this resource: ${unregistered.join(", ")}. Edit the resource scopes first.\n`,
+        );
+        continue;
+      }
+      allowed.set(audience, scopes);
+      break;
+    }
+  }
+  return allowed;
+}
+
+function parsePermissionSelection(value: string): string[] {
+  return value.toLowerCase() === "none" ? [] : splitList(value);
+}
+
+function allScopes(resourceScopes: Map<string, string[]>): string[] {
+  return [...new Set([...resourceScopes.values()].flat())];
+}
+
+function printClientSummary(
+  input: {
+    clientId?: string;
+    name?: string;
+    public: boolean;
+    disabled?: boolean;
+    redirectUris: string[];
+    resources: string[];
+    scopes: string[];
+    permissions: PermissionDefinitions;
+    defaultPermissions?: string[];
+    requireConsent: boolean;
+    filterMode: "whitelist" | "blacklist" | null;
+    filterContent: string[];
+    organizationIds: string[];
+  },
+  resourceScopes: Map<string, string[]>,
+  owners: ClientOwner[] = [],
+): void {
   process.stdout.write(
     `${input.clientId ? `\nClient ID: ${input.clientId}\n` : "\n"}Name: ${input.name ?? "(none)"}\nType: ${input.public ? "public" : "confidential"}\n` +
       `Disabled: ${input.disabled ? "yes" : "no"}\n` +
-      `Redirects: ${input.redirectUris.join(", ")}\nResources: ${input.resources.join(", ")}\n` +
-      `Scopes: ${input.scopes.join(", ")}\nConsent: ${input.requireConsent ? "shown" : "skipped"}\n` +
-      `Permission definitions: ${Object.keys(input.permissions).length}\n` +
+      `Redirects: ${input.redirectUris.join(", ")}\n` +
+      `Resources:\n${input.resources.map((resource) =>
+        `  - ${resource}: ${(resourceScopes.get(resource) ?? []).join(", ") || "(no scopes)"}`,
+      ).join("\n")}\n` +
+      `Permission definitions: ${Object.entries(input.permissions).map(([permission, description]) => `${permission} (${description})`).join(", ") || "(none)"}\n` +
+      `Default permissions: ${(input.defaultPermissions ?? []).join(", ") || "(none)"}\n` +
+      `Consent: ${input.requireConsent ? "shown" : "skipped"}\n` +
       `Organizations: ${input.organizationIds.join(", ")}\n` +
-      `Filter: ${input.filterMode ?? "none"}${input.filterContent.length ? ` (${input.filterContent.join(", ")})` : ""}\n`,
+      `Filter: ${input.filterMode ?? "none"}${input.filterContent.length ? ` (${input.filterContent.join(", ")})` : ""}\n` +
+      `Owners: ${owners.map((owner) => `${owner.id} (${owner.role})`).join(", ") || "(unchanged)"}\n`,
   );
 }
 
@@ -285,9 +494,14 @@ export interface NewClient {
   input: Omit<ClientSeed, "clientId">;
   generatedSecret: string | null;
   resourceScopes: Map<string, string[]>;
+  resourceDefinitions: Map<string, string[]>;
 }
 
-export async function promptNewClient(rl: Interface, audiences: string[]): Promise<NewClient | null> {
+export async function promptNewClient(
+  rl: Interface,
+  resourceDetails: ResourceDetail[],
+): Promise<NewClient | null> {
+  const audiences = resourceDetails.map((resource) => resource.audience);
   const name = await ask(rl, "Display name");
   const isPublic = await askYesNo(rl, "Public client (no secret)?", false);
 
@@ -301,12 +515,16 @@ export async function promptNewClient(rl: Interface, audiences: string[]): Promi
 
   const redirectUris = await promptRedirectUris(rl, "", isPublic);
   const resources = await promptResources(rl, audiences, "");
-  const resourceScopes = await promptMissingResourceScopes(rl, resources, new Set(audiences));
-
-  const scopes = splitList(await ask(rl, "Resource scopes (comma-separated)", ""));
-  const permissions = parsePermissionDefinitions(
-    await ask(rl, "Permission definitions (JSON object mapping permission names to descriptions)", "{}"),
+  const available = new Map(resourceDetails.map((resource) => [resource.audience, resource.scopes]));
+  const missing = await promptMissingResourceScopes(rl, resources, new Set(audiences));
+  for (const [audience, scopes] of missing) available.set(audience, scopes);
+  const resourceScopes = await promptAllowedResourceScopes(
+    rl, resources, available, new Map(), true,
   );
+  const scopes = allScopes(resourceScopes);
+
+  const permissions = await promptPermissionDefinitions(rl, {});
+  const defaultPermissions = await promptDefaultPermissions(rl, permissions, []);
   const requireConsent = await askYesNo(rl, "Show consent screen?", true);
   const filterMode = await promptFilterMode(rl, "");
   const filterContent = filterMode ? splitList(await ask(rl, "Filter emails (comma-separated)")) : [];
@@ -318,8 +536,9 @@ export async function promptNewClient(rl: Interface, audiences: string[]): Promi
     redirectUris,
     public: isPublic,
     ...(scopes.length ? { scopes } : {}),
-    resourceScopes: Object.fromEntries(resources.map((resource) => [resource, scopes])),
+    resourceScopes: Object.fromEntries(resourceScopes),
     permissions,
+    defaultPermissions,
     resources,
     requireConsent,
     filterMode,
@@ -327,26 +546,32 @@ export async function promptNewClient(rl: Interface, audiences: string[]): Promi
     organizationIds,
   });
 
-  printClientSummary(input);
+  printClientSummary(input, resourceScopes);
   if (!(await askYesNo(rl, "Create this client?", true))) return null;
-  return { input, generatedSecret, resourceScopes };
+  return { input, generatedSecret, resourceScopes, resourceDefinitions: missing };
 }
 
 export async function runAddFlow(db: Database): Promise<void> {
   requireTty();
-  const known = await resourceAudiences(db);
+  const resources = await listResources(db);
+  const known = new Set(resources.map((resource) => resource.audience));
   const rl = createInterface({ input, output });
   try {
-    const created = await promptNewClient(rl, [...known].sort());
+    const created = await promptNewClient(rl, resources);
     if (!created) {
       process.stdout.write("Cancelled.\n");
       return;
     }
-    const client = await saveClient(db, created.input, created.resourceScopes);
+    const client = await saveClient(
+      db, created.input, created.resourceScopes, created.resourceDefinitions,
+    );
     process.stdout.write(`Created client ${client.clientId}\n`);
     const registered = created.input.resources.filter((audience) => !known.has(audience));
     if (registered.length) {
       process.stdout.write(`Registered new resource(s) live, no restart needed: ${registered.join(", ")}\n`);
+      process.stdout.write(
+        "Their initial secrets were not shown; use Resources > Rotate resource secret to issue one before wiring callers.\n",
+      );
     }
     if (created.generatedSecret) {
       process.stdout.write(`Client secret (copy now, only a hash is stored): ${created.generatedSecret}\n`);
@@ -364,13 +589,17 @@ async function pickClient(rl: Interface, clients: ListedClient[], verb: string):
   return selected;
 }
 
+async function resourceDetailMap(db: Database): Promise<Map<string, ResourceDetail>> {
+  return new Map((await listResources(db)).map((resource) => [resource.audience, resource]));
+}
+
 async function listedOrEmpty(db: Database): Promise<ListedClient[] | null> {
   const clients = await listClients(db);
   if (!clients.length) {
     process.stdout.write("No clients registered.\n");
     return null;
   }
-  printClients(clients, await resourceAudiences(db));
+  printClients(clients, await resourceDetailMap(db));
   return clients;
 }
 
@@ -409,13 +638,20 @@ export interface ClientDetail {
   hasSecret: boolean;
   redirectUris: string[];
   scopes: string[];
+  resourceScopes: Record<string, string[]>;
   permissions: PermissionDefinitions;
+  defaultPermissions: string[];
   resources: string[];
   requireConsent: boolean;
   filterMode: "whitelist" | "blacklist" | null;
   filterContent: string[];
   owners: ClientOwner[];
+  ownerLabels: Record<string, string>;
   organizationIds: string[];
+  permissionCatalogVersion: number;
+  grantCount: number;
+  userCount: number;
+  sessionCount: number;
   updatedAt: string;
 }
 
@@ -423,13 +659,41 @@ export async function getClientDetail(db: Database, clientId: string): Promise<C
   const [row] = await db.select().from(oidcClients).where(eq(oidcClients.clientId, clientId)).limit(1);
   if (!row) throw new Error(`Client ${clientId} does not exist`);
   const metadata = row.metadata as Partial<StoredClientMetadata>;
-  const definitions = await db
-    .select({ permission: oidcPermissions.permission, description: oidcPermissions.description })
-    .from(oidcPermissions)
-    .where(eq(oidcPermissions.clientId, clientId));
+  const [definitions, defaults, ownerRows, counts, affiliationCount, sessionCount] = await Promise.all([
+    db
+      .select({ permission: oidcPermissions.permission, description: oidcPermissions.description })
+      .from(oidcPermissions)
+      .where(eq(oidcPermissions.clientId, clientId)),
+    db
+      .select({ permission: defaultPermissions.permission })
+      .from(defaultPermissions)
+      .where(eq(defaultPermissions.applicationId, clientId)),
+    Promise.resolve(metadata.owners ?? []).then((owners) => owners.length
+      ? db
+          .select({ id: users.id, email: users.email, displayName: users.displayName })
+          .from(users)
+          .where(inArray(users.id, owners.map((owner) => owner.id)))
+      : []),
+    db
+      .select({ grants: sql<number>`count(*)::int` })
+      .from(userPermissions)
+      .where(eq(userPermissions.applicationId, clientId)),
+    db
+      .select({ users: sql<number>`count(*)::int` })
+      .from(userApplications)
+      .where(eq(userApplications.applicationId, clientId)),
+    db
+      .select({ sessions: sql<number>`count(*)::int` })
+      .from(authorizationSessions)
+      .where(and(
+        eq(authorizationSessions.clientId, clientId),
+        isNull(authorizationSessions.revokedAt),
+      )),
+  ]);
   const legacyDefinitions = metadata.permissions && typeof metadata.permissions === "object"
     ? metadata.permissions as PermissionDefinitions
     : {};
+  const owners = metadata.owners ?? [];
   return {
     clientId: row.clientId,
     name: metadata.name || row.clientId,
@@ -438,20 +702,31 @@ export async function getClientDetail(db: Database, clientId: string): Promise<C
     hasSecret: row.secretHash !== null,
     redirectUris: metadata.redirectUris ?? [],
     scopes: metadata.scopes ?? [],
+    resourceScopes: metadata.resourceScopes ?? Object.fromEntries(
+      (row.resources ?? []).map((resource) => [resource, metadata.scopes ?? []]),
+    ),
     permissions: definitions.length
       ? Object.fromEntries(definitions.map((definition) => [definition.permission, definition.description]))
       : legacyDefinitions,
+    defaultPermissions: defaults.map((definition) => definition.permission),
     resources: row.resources ?? [],
     requireConsent: row.requireConsent,
     filterMode: row.filterMode ?? null,
     filterContent: row.filterContent ?? [],
-    owners: metadata.owners ?? [],
+    owners,
+    ownerLabels: Object.fromEntries(
+      ownerRows.map((user) => [user.id, user.displayName?.trim() || user.email]),
+    ),
     organizationIds: (await db
       .select({ organizationId: organizations.organizationId })
       .from(oidcClientOrganizations)
       .innerJoin(organizations, eq(oidcClientOrganizations.organizationId, organizations.id))
       .where(eq(oidcClientOrganizations.clientId, clientId)))
       .map((organization) => organization.organizationId),
+    permissionCatalogVersion: row.permissionCatalogVersion,
+    grantCount: counts[0]?.grants ?? 0,
+    userCount: affiliationCount[0]?.users ?? 0,
+    sessionCount: sessionCount[0]?.sessions ?? 0,
     updatedAt: row.updatedAt.toISOString(),
   };
 }
@@ -465,19 +740,64 @@ export interface EditedClient {
   redirectUris: string[];
   scopes: string[];
   permissions: PermissionDefinitions;
+  defaultPermissions: string[];
   resources: string[];
   requireConsent: boolean;
   filterMode: "whitelist" | "blacklist" | null;
   filterContent: string[];
   organizationIds: string[];
+  owners: ClientOwner[];
   resourceScopes: Map<string, string[]>;
+  resourceDefinitions?: Map<string, string[]>;
+}
+
+async function promptOwners(
+  rl: Interface,
+  owners: ClientOwner[],
+  labels: Record<string, string>,
+): Promise<ClientOwner[]> {
+  const formatted = owners.map((owner) => `${owner.id}:${owner.role}`).join(", ");
+  process.stdout.write(
+    `Current owners: ${owners.map((owner) =>
+      `${owner.id} (${owner.role}${labels[owner.id] ? `, ${labels[owner.id]}` : ""})`,
+    ).join(", ") || "(none)"}\n`,
+  );
+  for (;;) {
+    const raw = await ask(
+      rl,
+      'Owners (comma-separated id:role.ADMIN|role.GENERAL, blank = keep, "none" = remove all)',
+      formatted,
+    );
+    if (!raw || raw === formatted) return owners;
+    if (raw.toLowerCase() === "none") return [];
+    try {
+      const seen = new Set<string>();
+      return raw.split(",").map((entry) => {
+        const [id, role, ...extra] = entry.split(":");
+        const trimmedId = id?.trim() ?? "";
+        const normalizedRole = (role?.trim() ?? "") as ClientOwner["role"];
+        if (extra.length || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(trimmedId)) {
+          throw new Error(`Invalid owner entry "${entry.trim()}". Use <uuid>:role.ADMIN or <uuid>:role.GENERAL`);
+        }
+        if (normalizedRole !== "role.ADMIN" && normalizedRole !== "role.GENERAL") {
+          throw new Error(`Invalid owner role in "${entry.trim()}". Use role.ADMIN or role.GENERAL`);
+        }
+        if (seen.has(trimmedId)) throw new Error(`Duplicate owner ${trimmedId}`);
+        seen.add(trimmedId);
+        return { id: trimmedId, role: normalizedRole };
+      });
+    } catch (error) {
+      process.stdout.write(`${error instanceof Error ? error.message : "Invalid owners"}\n`);
+    }
+  }
 }
 
 export async function promptEditClient(
   rl: Interface,
   current: ClientDetail,
-  audiences: string[],
+  resourceDetails: ResourceDetail[],
 ): Promise<EditedClient | null> {
+  const audiences = resourceDetails.map((resource) => resource.audience);
   const name = await ask(rl, "Display name", current.name);
   const requestedClientId = await ask(
     rl,
@@ -505,22 +825,24 @@ export async function promptEditClient(
 
   const redirectUris = await promptRedirectUris(rl, current.redirectUris.join(", "), isPublic);
   const resources = await promptResources(rl, audiences, current.resources.join(", "));
-  const resourceScopes = await promptMissingResourceScopes(rl, resources, new Set(audiences));
+  const available = new Map(resourceDetails.map((resource) => [resource.audience, resource.scopes]));
+  const missing = await promptMissingResourceScopes(rl, resources, new Set(audiences));
+  for (const [audience, scopes] of missing) available.set(audience, scopes);
+  const resourceScopes = await promptAllowedResourceScopes(
+    rl, resources, available, new Map(Object.entries(current.resourceScopes)), false,
+  );
+  const scopes = allScopes(resourceScopes);
 
-  const scopesRaw = await ask(rl, "Scopes (comma-separated, blank = keep)", current.scopes.join(", "));
-  const scopes = scopesRaw === current.scopes.join(", ") ? current.scopes : splitList(scopesRaw);
-  const permissions = parsePermissionDefinitions(
-    await ask(
-      rl,
-      "Permission definitions (JSON object mapping permission names to descriptions)",
-      JSON.stringify(current.permissions),
-    ),
+  const permissions = await promptPermissionDefinitions(rl, current.permissions);
+  const defaultPermissions = await promptDefaultPermissions(
+    rl, permissions, current.defaultPermissions,
   );
   const requireConsent = await askYesNo(rl, "Show consent screen?", current.requireConsent);
   const filterMode = await promptFilterMode(rl, current.filterMode ?? "");
   const filterDefault = filterMode === current.filterMode ? current.filterContent.join(", ") : "";
   const filterContent = filterMode ? splitList(await ask(rl, "Filter emails (comma-separated)", filterDefault)) : [];
   const organizationIds = await promptOrganizationIds(rl, current.organizationIds);
+  const owners = await promptOwners(rl, current.owners, current.ownerLabels);
 
   const input = clientInputSchema.parse({
     name,
@@ -528,8 +850,9 @@ export async function promptEditClient(
     redirectUris,
     public: isPublic,
     scopes,
-    resourceScopes: Object.fromEntries(resources.map((resource) => [resource, scopes])),
+    resourceScopes: Object.fromEntries(resourceScopes),
     permissions,
+    defaultPermissions,
     resources,
     requireConsent,
     filterMode,
@@ -537,12 +860,21 @@ export async function promptEditClient(
     organizationIds,
   });
 
-  printClientSummary({ ...input, clientId, disabled });
+  printClientSummary({ ...input, clientId, disabled }, resourceScopes, owners);
   process.stdout.write(
     `Secret: ${newSecret === undefined ? "kept" : newSecret === null ? "dropped" : "rotated (shown once after save)"}\n`,
   );
   if (!(await askYesNo(rl, "Save changes?", true))) return null;
-  return { ...input, clientId, name: input.name ?? current.clientId, disabled, newSecret, resourceScopes };
+  return {
+    ...input,
+    clientId,
+    name: input.name ?? current.clientId,
+    disabled,
+    newSecret,
+    owners,
+    resourceScopes,
+    resourceDefinitions: missing,
+  };
 }
 
 export async function applyClientEdit(db: Database, clientId: string, edit: EditedClient): Promise<string | null> {
@@ -562,6 +894,7 @@ export async function applyClientEdit(db: Database, clientId: string, edit: Edit
   const metadata: StoredClientMetadata = {
     ...current,
     name: edit.name,
+    owners: edit.owners,
     redirectUris: edit.redirectUris,
     public: edit.public,
     scopes: edit.scopes,
@@ -582,7 +915,10 @@ export async function applyClientEdit(db: Database, clientId: string, edit: Edit
 
   await ensureResourcesRegistered(
     db,
-    edit.resources.map((audience) => ({ audience, scopes: edit.resourceScopes.get(audience) ?? [] })),
+    edit.resources.map((audience) => ({
+      audience,
+      scopes: edit.resourceDefinitions?.get(audience) ?? edit.resourceScopes.get(audience) ?? [],
+    })),
   );
   const linkedOrganizations = await db
     .select({ id: organizations.id })
@@ -633,6 +969,14 @@ export async function applyClientEdit(db: Database, clientId: string, edit: Edit
     );
   });
   await syncPermissionCatalog(db, targetClientId, edit.permissions);
+  await db.transaction(async (tx) => {
+    await tx.delete(defaultPermissions).where(eq(defaultPermissions.applicationId, targetClientId));
+    if (edit.defaultPermissions.length) {
+      await tx.insert(defaultPermissions).values(
+        edit.defaultPermissions.map((permission) => ({ applicationId: targetClientId, permission })),
+      );
+    }
+  });
   return rotatedSecret;
 }
 
@@ -640,11 +984,16 @@ export async function runEditFlow(db: Database): Promise<void> {
   requireTty();
   const clients = await listedOrEmpty(db);
   if (!clients) return;
-  const known = await resourceAudiences(db);
+  const resourceDetails = await listResources(db);
+  const known = new Set(resourceDetails.map((resource) => resource.audience));
   const rl = createInterface({ input, output });
   try {
     const selected = await pickClient(rl, clients, "edit");
-    const edited = await promptEditClient(rl, await getClientDetail(db, selected.clientId), [...known].sort());
+    const edited = await promptEditClient(
+      rl,
+      await getClientDetail(db, selected.clientId),
+      resourceDetails,
+    );
     if (!edited) {
       process.stdout.write("Cancelled.\n");
       return;
@@ -671,13 +1020,112 @@ export async function runEditFlow(db: Database): Promise<void> {
   }
 }
 
+export async function runRotateClientSecretFlow(db: Database): Promise<void> {
+  requireTty();
+  const clients = await listedOrEmpty(db);
+  if (!clients) return;
+  const rl = createInterface({ input, output });
+  try {
+    const selected = await pickClient(rl, clients, "rotate the secret for");
+    if (selected.public) {
+      process.stdout.write(
+        `${selected.clientId} is a public client and has no secret. Use Edit client to change its type first.\n`,
+      );
+      return;
+    }
+    if (!(await askYesNo(
+      rl,
+      `Rotate the secret for ${selected.name} (${selected.clientId})? Downstream login fails until updated`,
+      false,
+    ))) {
+      process.stdout.write("Cancelled.\n");
+      return;
+    }
+    const secret = generateClientSecret();
+    await db.update(oidcClients).set({
+      secretHash: await hashClientSecret(secret),
+      updatedAt: new Date(),
+    }).where(eq(oidcClients.clientId, selected.clientId));
+    process.stdout.write(`New client secret (copy now, only a hash is stored): ${secret}\n`);
+  } finally {
+    rl.close();
+  }
+}
+
+async function pickResource(
+  rl: Interface,
+  resources: ResourceDetail[],
+  verb: string,
+): Promise<ResourceDetail> {
+  const raw = await ask(rl, `Resource to ${verb} (number or audience)`);
+  const byNumber = /^\d+$/.test(raw) ? resources[Number(raw) - 1] : undefined;
+  const selected = byNumber ?? resources.find((resource) => resource.audience === raw);
+  if (!selected) throw new Error(`No resource matches "${raw}"`);
+  return selected;
+}
+
+async function promptBackchannelUris(
+  rl: Interface,
+  initial: string[],
+  allowKeep: boolean,
+): Promise<string[] | undefined> {
+  for (;;) {
+    const raw = await ask(
+      rl,
+      `Backchannel logout URLs (comma-separated, ${allowKeep ? 'blank = keep, ' : ""}"none" = clear)`,
+      initial.join(", "),
+    );
+    if (!raw) return allowKeep ? undefined : [];
+    if (raw.toLowerCase() === "none") return [];
+    const uris = [...new Set(splitList(raw))];
+    const invalid = uris.filter((uri) => !backchannelLogoutUriSchema.safeParse(uri).success);
+    if (invalid.length) {
+      process.stdout.write(
+        `Invalid URL(s): ${invalid.join(", ")}. Use HTTPS, or HTTP with hostname exactly localhost; no credentials or fragment.\n`,
+      );
+      continue;
+    }
+    return uris;
+  }
+}
+
+async function confirmBackchannelUris(
+  db: Database,
+  rl: Interface,
+  audience: string,
+  uris: string[],
+): Promise<string[] | null> {
+  if (!(await askYesNo(
+    rl,
+    "Verify the webhook URLs now? The receivers and basis-auth internal listener must be reachable",
+    true,
+  ))) return uris;
+  const verifier = createBackchannelVerifier(db);
+  const verified: string[] = [];
+  const failed: string[] = [];
+  for (const uri of uris) {
+    process.stdout.write(`Sending action=test to ${uri} and waiting up to 10 seconds...\n`);
+    const result = await verifier.verifyDestination(audience, uri);
+    if (result === "verified") verified.push(uri);
+    else failed.push(`${uri} (${result})`);
+  }
+  if (!failed.length) {
+    process.stdout.write("All webhooks verified.\n");
+    return uris;
+  }
+  process.stdout.write(
+    `Verification failed: ${failed.join(", ")}. A receiver must return 202 and post the HMAC proof to the internal API.\n`,
+  );
+  if (verified.length) {
+    if (await askYesNo(rl, `Save only the ${verified.length} verified URL(s)?`, true)) return verified;
+  }
+  return (await askYesNo(rl, "Save the URLs without verification anyway?", false)) ? uris : null;
+}
+
 export async function runRegisterResourceFlow(db: Database): Promise<void> {
   requireTty();
-  const known = await resourceAudiences(db);
-  if (known.size) {
-    process.stdout.write("Registered resources:\n");
-    [...known].sort().forEach((audience, index) => process.stdout.write(`  ${index + 1}) ${audience}\n`));
-  }
+  const existing = await listResources(db);
+  if (existing.length) printResources(existing);
   const rl = createInterface({ input, output });
   try {
     const audience = await ask(rl, "New resource audience (e.g. urn:basis:api:example)");
@@ -685,13 +1133,169 @@ export async function runRegisterResourceFlow(db: Database): Promise<void> {
       process.stdout.write("Cancelled.\n");
       return;
     }
-    if (known.has(audience)) {
-      process.stdout.write(`${audience} is already registered.\n`);
+    if (existing.some((resource) => resource.audience === audience)) {
+      process.stdout.write(`${audience} is already registered. Use Edit resource instead.\n`);
       return;
     }
-    const scopes = splitList(await ask(rl, `Scopes for ${audience} (comma-separated, blank = none)`));
-    await ensureResourcesRegistered(db, [{ audience, scopes }]);
+    const name = await ask(rl, "Display name", audience);
+    const scopes = await promptScopes(rl, "Resource scopes", []);
+    const backchannelLogoutUris = await promptBackchannelUris(rl, [], false);
+    const secret = generateClientSecret();
+    await db.insert(resourceServers).values({
+      audience,
+      name: name || audience,
+      scopes,
+      secretHash: await hashClientSecret(secret),
+      backchannelLogoutUris: [],
+    });
+    let savedLogoutUris: string[] = [];
+    if (backchannelLogoutUris?.length) {
+      const accepted = await confirmBackchannelUris(db, rl, audience, backchannelLogoutUris);
+      if (accepted?.length) {
+        await db.update(resourceServers).set({ backchannelLogoutUris: accepted, updatedAt: new Date() })
+          .where(eq(resourceServers.audience, audience));
+        savedLogoutUris = accepted;
+      }
+    }
     process.stdout.write(`Registered ${audience} live, no restart needed\n`);
+    process.stdout.write(`Resource secret (copy now, only a hash is stored): ${secret}\n`);
+    if (!savedLogoutUris.length) {
+      process.stdout.write(
+        "No backchannel logout URL: authorization-code sign-in and refresh for this resource fail with 14408 until one is configured.\n",
+      );
+    }
+  } finally {
+    rl.close();
+  }
+}
+
+export async function runListResourcesFlow(db: Database): Promise<void> {
+  printResources(await listResources(db));
+}
+
+export async function runEditResourceFlow(db: Database): Promise<void> {
+  requireTty();
+  const resources = await listResources(db);
+  if (!resources.length) {
+    process.stdout.write("No resources registered.\n");
+    return;
+  }
+  printResources(resources);
+  const rl = createInterface({ input, output });
+  try {
+    const selected = await pickResource(rl, resources, "edit");
+    const name = await ask(rl, "Display name", selected.name);
+    const clientRows = await db
+      .select({ clientId: oidcClients.clientId, resources: oidcClients.resources, metadata: oidcClients.metadata })
+      .from(oidcClients);
+    let scopes: string[] = selected.scopes;
+    for (;;) {
+      const candidate = await promptScopes(rl, "Resource scopes", scopes);
+      const removed = selected.scopes.filter((scope) => !candidate.includes(scope));
+      const conflicts = clientRows.flatMap((row) => {
+        if (!(row.resources ?? []).includes(selected.audience)) return [];
+        const metadata = row.metadata as Partial<StoredClientMetadata>;
+        const allowed = metadata.resourceScopes?.[selected.audience] ?? metadata.scopes ?? [];
+        const affected = allowed.filter((scope) => removed.includes(scope));
+        return affected.length ? [`${row.clientId} (${affected.join(", ")})`] : [];
+      });
+      scopes = candidate;
+      if (!conflicts.length) break;
+      process.stdout.write(
+        `Cannot remove scopes still allowed for clients: ${conflicts.join(", ")}. Update those clients first.\n`,
+      );
+    }
+    const requestedLogoutUris = await promptBackchannelUris(
+      rl, selected.backchannelLogoutUris, true,
+    );
+    const acceptedLogoutUris = requestedLogoutUris === undefined
+      ? undefined
+      : requestedLogoutUris.length === 0
+        ? []
+        : await confirmBackchannelUris(db, rl, selected.audience, requestedLogoutUris) ?? undefined;
+    await db.update(resourceServers).set({
+      name: name || selected.audience,
+      scopes,
+      ...(acceptedLogoutUris === undefined ? {} : { backchannelLogoutUris: acceptedLogoutUris }),
+      updatedAt: new Date(),
+    }).where(eq(resourceServers.audience, selected.audience));
+    process.stdout.write(`Updated resource ${selected.audience}\n`);
+    if (acceptedLogoutUris?.length === 0) {
+      process.stdout.write(
+        "Backchannel logout cleared: authorization-code sign-in and refresh for this resource now fail with 14408.\n",
+      );
+    } else if (requestedLogoutUris !== undefined && acceptedLogoutUris === undefined) {
+      process.stdout.write("Backchannel logout URLs were left unchanged.\n");
+    }
+  } finally {
+    rl.close();
+  }
+}
+
+export async function runRotateResourceSecretFlow(db: Database): Promise<void> {
+  requireTty();
+  const resources = await listResources(db);
+  if (!resources.length) {
+    process.stdout.write("No resources registered.\n");
+    return;
+  }
+  printResources(resources);
+  const rl = createInterface({ input, output });
+  try {
+    const selected = await pickResource(rl, resources, "rotate the secret for");
+    if (!(await askYesNo(
+      rl,
+      `Rotate ${selected.audience}? Every caller using the old secret fails until updated`,
+      false,
+    ))) {
+      process.stdout.write("Cancelled.\n");
+      return;
+    }
+    const secret = generateClientSecret();
+    await db.update(resourceServers).set({
+      secretHash: await hashClientSecret(secret),
+      updatedAt: new Date(),
+    }).where(eq(resourceServers.audience, selected.audience));
+    process.stdout.write(`Resource secret (copy now, only a hash is stored): ${secret}\n`);
+    process.stdout.write(
+      "Update the backchannel receiver, internal API callers, and any other service that authenticates as this resource.\n",
+    );
+  } finally {
+    rl.close();
+  }
+}
+
+export async function runDeleteResourceFlow(db: Database): Promise<void> {
+  requireTty();
+  const resources = await listResources(db);
+  if (!resources.length) {
+    process.stdout.write("No resources registered.\n");
+    return;
+  }
+  printResources(resources);
+  const rl = createInterface({ input, output });
+  try {
+    const selected = await pickResource(rl, resources, "delete");
+    if (selected.clientIds.length) {
+      process.stdout.write(
+        `WARNING: these clients still reference ${selected.audience}: ${selected.clientIds.join(", ")}\n`,
+      );
+    }
+    if (!(await askYesNo(
+      rl,
+      `Delete ${selected.name} (${selected.audience})? Verification data and the secret go with it`,
+      false,
+    ))) {
+      process.stdout.write("Cancelled.\n");
+      return;
+    }
+    await db.delete(resourceServers).where(eq(resourceServers.audience, selected.audience));
+    process.stdout.write(`Deleted resource ${selected.audience}\n`);
+    if (selected.clientIds.length) {
+      process.stdout.write(
+        `Remove ${selected.audience} from clients ${selected.clientIds.join(", ")} before their next sign-in.\n`,
+      );
+    }
   } finally {
     rl.close();
   }
@@ -701,7 +1305,20 @@ export async function runMenu(db: Database): Promise<void> {
   requireTty();
   for (;;) {
     process.stdout.write(
-      "\nClients\n1) List clients\n2) Add client\n3) Remove client\n4) Edit client\n5) Register resource\n6) Quit\n",
+      "\nbasis-auth administration\n" +
+        "Clients\n" +
+        "  1) List clients\n" +
+        "  2) Add client\n" +
+        "  3) Edit client\n" +
+        "  4) Rotate client secret\n" +
+        "  5) Remove client\n" +
+        "Resources\n" +
+        "  6) List resources\n" +
+        "  7) Add resource\n" +
+        "  8) Edit resource\n" +
+        "  9) Rotate resource secret\n" +
+        " 10) Delete resource\n" +
+        " 11) Quit\n",
     );
     const rl = createInterface({ input, output });
     let choice: string;
@@ -712,11 +1329,16 @@ export async function runMenu(db: Database): Promise<void> {
     }
     if (choice === "1") await listedOrEmpty(db);
     else if (choice === "2") await runAddFlow(db);
-    else if (choice === "3") await runRemoveFlow(db);
-    else if (choice === "4") await runEditFlow(db);
-    else if (choice === "5") await runRegisterResourceFlow(db);
-    else if (choice === "6" || /^q(uit)?$/i.test(choice)) return;
-    else process.stdout.write("Enter 1-6.\n");
+    else if (choice === "3") await runEditFlow(db);
+    else if (choice === "4") await runRotateClientSecretFlow(db);
+    else if (choice === "5") await runRemoveFlow(db);
+    else if (choice === "6") await runListResourcesFlow(db);
+    else if (choice === "7") await runRegisterResourceFlow(db);
+    else if (choice === "8") await runEditResourceFlow(db);
+    else if (choice === "9") await runRotateResourceSecretFlow(db);
+    else if (choice === "10") await runDeleteResourceFlow(db);
+    else if (choice === "11" || /^q(uit)?$/i.test(choice)) return;
+    else process.stdout.write("Enter 1-11.\n");
   }
 }
 

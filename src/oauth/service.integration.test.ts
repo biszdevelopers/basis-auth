@@ -114,17 +114,17 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
       verifyDestination, validate: vi.fn(),
     });
 
-    await seedConfiguration(db, [], [{ ...resource, backchannelLogoutUri: uri }]);
-    await expect(loadResource()).resolves.toEqual([expect.objectContaining({ backchannelLogoutUri: null })]);
-    await expect(applications.reconcileConfiguredLogoutUri(resource.audience, uri)).rejects.toMatchObject({ status: 502 });
-    await expect(loadResource()).resolves.toEqual([expect.objectContaining({ backchannelLogoutUri: null })]);
-    await applications.reconcileConfiguredLogoutUri(resource.audience, uri);
-    await applications.reconcileConfiguredLogoutUri(resource.audience, uri);
+    await seedConfiguration(db, [], [{ ...resource, backchannelLogoutUris: [uri] }]);
+    await expect(loadResource()).resolves.toEqual([expect.objectContaining({ backchannelLogoutUris: [] })]);
+    await expect(applications.reconcileConfiguredLogoutUris(resource.audience, [uri])).rejects.toMatchObject({ status: 502 });
+    await expect(loadResource()).resolves.toEqual([expect.objectContaining({ backchannelLogoutUris: [] })]);
+    await applications.reconcileConfiguredLogoutUris(resource.audience, [uri]);
+    await applications.reconcileConfiguredLogoutUris(resource.audience, [uri]);
     expect(verifyDestination).toHaveBeenCalledTimes(2);
     await seedConfiguration(db, [], [resource]);
-    await expect(loadResource()).resolves.toEqual([expect.objectContaining({ backchannelLogoutUri: uri })]);
-    await seedConfiguration(db, [], [{ ...resource, backchannelLogoutUri: null }]);
-    await expect(loadResource()).resolves.toEqual([expect.objectContaining({ backchannelLogoutUri: null })]);
+    await expect(loadResource()).resolves.toEqual([expect.objectContaining({ backchannelLogoutUris: [uri] })]);
+    await seedConfiguration(db, [], [{ ...resource, backchannelLogoutUris: [] }]);
+    await expect(loadResource()).resolves.toEqual([expect.objectContaining({ backchannelLogoutUris: [] })]);
   });
 
   it("checks resource ownership, active scope assignments, and the stored logout destination", async () => {
@@ -229,7 +229,7 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
         method: "POST", redirect: "error",
       }));
       expect((fetch.mock.lastCall?.[1]?.body as URLSearchParams).get("action")).toBe("test");
-      await expect(applications.resourceDetail(resourceId, owner)).resolves.toMatchObject({ backchannelLogoutUri: null });
+      await expect(applications.resourceDetail(resourceId, owner)).resolves.toMatchObject({ backchannelLogoutUris: [] });
       const { nonce, hash } = proof();
       expect((await validate(nonce, hash, oldSecret)).status).toBe(401);
       expect((await validate(nonce, "0".repeat(64))).status).toBe(400);
@@ -237,7 +237,7 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
       const validation = await validate(nonce, hash);
       expect(validation.status).toBe(200);
       expect(await validation.json()).toEqual({ status: "successful" });
-      await expect(saving).resolves.toEqual({ backchannelLogoutUri: logoutUri });
+      await expect(saving).resolves.toEqual({ backchannelLogoutUris: [logoutUri] });
       expect((await validate(nonce, hash)).status).toBe(400);
 
       const changedUri = "https://resource.example.test/replacement";
@@ -367,10 +367,10 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
   it("issues audience-bound tokens, rejects code replay, and detects refresh reuse", async () => {
     const resourceAudience = "urn:basis:api:projects";
     const logoutUri = "https://projects.example.test/logout";
-    const setLogoutUri = (backchannelLogoutUri: string | null) =>
-      db.update(resourceServers).set({ backchannelLogoutUri })
+    const setLogoutUri = (backchannelLogoutUris: string[]) =>
+      db.update(resourceServers).set({ backchannelLogoutUris })
         .where(eq(resourceServers.audience, resourceAudience));
-    await setLogoutUri(logoutUri);
+    await setLogoutUri([logoutUri]);
     const user = await identity.upsertFromMicrosoft({
       provider: "basischina-microsoft",
       issuer: "https://login.microsoftonline.com/tenant/v2.0",
@@ -392,10 +392,10 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
       codeChallengeMethod: "S256",
       session: { userId: user.id, authenticatedAt: new Date() },
     });
-    await setLogoutUri(null);
+    await setLogoutUri([]);
     await expect(oauth.completeAuthorization(started.id))
       .rejects.toMatchObject({ error: "invalid_resource", code: 14408 });
-    await setLogoutUri(logoutUri);
+    await setLogoutUri([logoutUri]);
     const redirect = new URL(await oauth.completeAuthorization(started.id));
     const code = redirect.searchParams.get("code")!;
     const exchangeRequest = {
@@ -405,10 +405,10 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
       redirectUri: "https://portal.example.test/callback",
       codeVerifier: verifier,
     };
-    await setLogoutUri(null);
+    await setLogoutUri([]);
     await expect(oauth.exchangeAuthorizationCode(exchangeRequest))
       .rejects.toMatchObject({ error: "invalid_resource", code: 14408 });
-    await setLogoutUri(logoutUri);
+    await setLogoutUri([logoutUri]);
     const tokens = await oauth.exchangeAuthorizationCode(exchangeRequest);
     const access = await keys.verifyAccessToken(String(tokens.access_token));
     const expectedPortalPermissions = ["nethack.Projects.read", ...portalScopedDefaults].sort();
@@ -516,11 +516,11 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
     using send = vi.spyOn(globalThis, "fetch")
       .mockRejectedValueOnce(new Error("connection lost"))
       .mockImplementation(async () => new Response(null, { status: 204 }));
-    await setLogoutUri(null);
+    await setLogoutUri([]);
     await expect(oauth.exchangeRefreshToken(refreshRequest)).rejects.toMatchObject({ error: "invalid_resource", code: 14408 });
     await expect(loadSession()).resolves.toEqual([session]);
     expect(send).not.toHaveBeenCalled();
-    await setLogoutUri(logoutUri);
+    await setLogoutUri([logoutUri]);
     const beforeRefresh = Math.floor(Date.now() / 1000);
     const rotated = await oauth.exchangeRefreshToken(refreshRequest);
     expect(rotated.refresh_token).toEqual(expect.any(String));
@@ -608,6 +608,44 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
     await expect(keys.verifyAccessToken(token)).rejects.toThrow("revoked");
     await withGrace.revoke(token, "portal", "portal-secret-long-enough");
     expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("fans out access-token revocations and retries only failed webhooks", async () => {
+    const resource = "urn:basis:api:projects";
+    const first = "https://projects.example.test/logout";
+    const second = "https://projects.example.test/backup-logout";
+    await db.update(resourceServers).set({ backchannelLogoutUris: [first, second] })
+      .where(eq(resourceServers.audience, resource));
+    const token = await keys.issueApplicationAccessToken({ clientId: "portal", resource, scopes: [] });
+    const access = await keys.verifyAccessToken(token);
+    try {
+      using send = vi.spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(new Response(null, { status: 204 }))
+        .mockResolvedValueOnce(new Response(null, { status: 500 }))
+        .mockResolvedValueOnce(new Response(null, { status: 204 }));
+      const service = createOAuthService(config, db, keys, identity);
+      await service.revoke(token, "portal", "portal-secret-long-enough");
+      expect(send.mock.calls.map(([target]) => String(target))).toEqual([first, second]);
+
+      const [pending] = await db.select().from(accessTokenRevocations)
+        .where(eq(accessTokenRevocations.jti, access.jti));
+      expect(pending).toMatchObject({ deliveredUris: [first], deliveredAt: null });
+
+      await db.update(accessTokenRevocations).set({ nextAttemptAt: new Date(0) })
+        .where(eq(accessTokenRevocations.jti, access.jti));
+      await service.flushAccessTokenRevocations();
+      expect(send).toHaveBeenCalledTimes(3);
+      expect(String(send.mock.calls[2]![0])).toBe(second);
+
+      const [delivered] = await db.select().from(accessTokenRevocations)
+        .where(eq(accessTokenRevocations.jti, access.jti));
+      expect(delivered?.deliveredUris).toEqual(expect.arrayContaining([first, second]));
+      expect(delivered?.deliveredAt).toBeInstanceOf(Date);
+    } finally {
+      await db.delete(accessTokenRevocations).where(eq(accessTokenRevocations.jti, access.jti));
+      await db.update(resourceServers).set({ backchannelLogoutUris: [] })
+        .where(eq(resourceServers.audience, resource));
+    }
   });
 
   it("moves client configuration and authorization state to a new client ID", async () => {

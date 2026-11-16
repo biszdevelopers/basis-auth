@@ -169,6 +169,20 @@
       "when": 1794747868803,
       "tag": "0023_access-token-revocations",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1794786979082,
+      "tag": "0024_absurd_banshee",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1794786994607,
+      "tag": "0025_wandering_zaladane",
+      "breakpoints": true
     }
   ]
 }

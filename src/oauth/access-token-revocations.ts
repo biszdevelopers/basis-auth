@@ -48,10 +48,16 @@ export function createAccessTokenRevocationDelivery(db: Database, keys: Pick<Key
         )).returning();
       if (!event) return;
 
-      const [resource] = await db.select({ uri: resourceServers.backchannelLogoutUri }).from(resourceServers)
+      const [resource] = await db.select({ uris: resourceServers.backchannelLogoutUris }).from(resourceServers)
         .where(eq(resourceServers.audience, event.audience));
-      const uri = backchannelLogoutUriSchema.safeParse(resource?.uri);
-      if (!uri.success) return;
+      const uris = (resource?.uris ?? []).filter((uri) => backchannelLogoutUriSchema.safeParse(uri).success);
+      if (!uris.length) return;
+      const pending = uris.filter((uri) => !event.deliveredUris.includes(uri));
+      if (!pending.length) {
+        await db.update(accessTokenRevocations).set({ deliveredAt: new Date() })
+          .where(and(eq(accessTokenRevocations.jti, jti), eq(accessTokenRevocations.validAfter, event.validAfter)));
+        return;
+      }
 
       const validAfter = event.validAfter.getTime() / 1000;
       const expiresAt = event.expiresAt ? event.expiresAt.getTime() / 1000 : null;
@@ -62,11 +68,19 @@ export function createAccessTokenRevocationDelivery(db: Database, keys: Pick<Key
         valid_after: String(validAfter),
         revocation_token: token,
       });
-      if (await postBackchannel(uri.data, body)) {
-        await db.update(accessTokenRevocations).set({ deliveredAt: new Date() }).where(and(
-          eq(accessTokenRevocations.jti, jti), eq(accessTokenRevocations.validAfter, event.validAfter),
-        ));
-      }
+      const results = await Promise.all(pending.map((uri) => postBackchannel(uri, body)));
+      const deliveredUris = [...new Set([
+        ...event.deliveredUris,
+        ...pending.filter((_, index) => results[index]),
+      ])];
+      const allDelivered = uris.every((uri) => deliveredUris.includes(uri));
+      await db.update(accessTokenRevocations).set({
+        deliveredUris,
+        ...(allDelivered ? { deliveredAt: new Date() } : {}),
+      }).where(and(
+        eq(accessTokenRevocations.jti, jti),
+        eq(accessTokenRevocations.validAfter, event.validAfter),
+      ));
     } catch (error) {
       // The event is persisted and can be retried by the delivery worker.
       console.warn("Access token revocation delivery failed", error instanceof Error ? error.name : "unknown error");
