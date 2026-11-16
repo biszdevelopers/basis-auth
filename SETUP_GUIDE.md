@@ -62,14 +62,15 @@ separately; never reuse a client across environments.
 - [ ] Permission definitions and first-login defaults for your client.
 - [ ] Resource secret for each resource your app owns or receives callbacks for.
       It is shown once and is required for backchannel verification.
-- [ ] The backchannel logout URL registered for each resource.
+- [ ] The backchannel logout URL(s) registered for each resource.
 - [ ] Internal API base URL, if your service calls the private management or
       user endpoints.
 - [ ] Organization/tenant and account-filter restrictions that apply to you.
 
-The resource must have a valid backchannel logout URL before authorization-code
-sign-in works. Without one, authorization returns
-`14408 invalid_resource`.
+A resource must have at least one valid backchannel logout URL before
+authorization-code sign-in works. Without one, authorization returns
+`14408 invalid_resource`. A resource may register multiple URLs; logout and
+access-token revocation events fan out to all of them.
 
 If you operate basis-auth as well, registration is covered in section 3.
 Otherwise, send the operator the values they ask for; most of section 3 is
@@ -104,7 +105,9 @@ Configuration seed:
     "audience": "urn:example:api",
     "name": "Example API",
     "scopes": ["projects.read", "projects.write"],
-    "backchannelLogoutUri": "https://api.example.org/auth/backchannel-logout"
+    "backchannelLogoutUris": [
+      "https://api.example.org/auth/backchannel-logout"
+    ]
   }
 ]
 ```
@@ -142,8 +145,9 @@ Rules that break integrations most often:
 - Defaults are granted once, on the user's first successful login to that
   client. Adding defaults later does not update existing users.
 - Permission grants belong to one client. Another client does not inherit them.
-- `backchannelLogoutUri` must use HTTPS or `http://localhost`, with no
-  credentials or fragment.
+- `backchannelLogoutUris` entries must use HTTPS or `http://localhost`, with no
+  credentials or fragment. The legacy single `backchannelLogoutUri` field is
+  still accepted. An empty list clears the callbacks.
 - Removing seed entries does not delete database rows. Remove the client or
   resource first, then remove its seed entry.
 
@@ -273,16 +277,19 @@ per-request token validation.
 
 ## 5. Backchannel logout and revocation receiver
 
-Each resource needs one receiver URL that handles three event types on the same
-endpoint:
+Each resource needs at least one receiver URL that handles three event types on
+the same endpoint:
 
 1. `action=test` webhook verification;
 2. `logout_token` user logout;
 3. `action=revoke_access_token` access-token revocation.
 
+A resource may register multiple URLs; every configured URL receives logout and
+access-token revocation events, and each URL is verified separately.
+
 ### 5.1 Verify the webhook
 
-When the URL is saved, basis-auth posts form-encoded `action=test`, a one-time
+When each URL is saved, basis-auth posts form-encoded `action=test`, a one-time
 `nonce` (43-character base64url), and a `challenge` (43-character base64url).
 
 1. Return `202 Accepted` immediately.
@@ -315,12 +322,12 @@ await fetch(new URL("/internal/backchannel/validate", internalUrl), {
 | `401 unauthorized` | Resource credentials missing or invalid. |
 | `408 timeout` | Challenge expired; save the URL again. |
 
-The previous URL stays active if verification fails. Clearing the URL takes
-effect immediately.
+The previous URL list stays active if verification fails. Clearing the list
+takes effect immediately.
 
 ### 5.2 Handle logout tokens
 
-When a user logs out, the receiver gets form-encoded `logout_token`.
+When a user logs out, every configured receiver gets form-encoded `logout_token`.
 
 Verify it against `/oauth/jwks` and require:
 
@@ -336,8 +343,8 @@ End the local sessions for that `sub` and return `200` or `204`.
 
 ### 5.3 Handle access-token revocations
 
-When an access token is replaced by refresh or explicitly revoked, the receiver
-gets form-encoded:
+When an access token is replaced by refresh or explicitly revoked, every
+configured receiver gets form-encoded:
 
 ```text
 action=revoke_access_token
@@ -511,7 +518,7 @@ Focus on:
 - backchannel logout and revocation event formats;
 - client/resource registration fields and defaults;
 - error codes and rejection responses;
-- new required resource configuration such as a webhook URL.
+- new required resource configuration such as webhook URLs.
 
 Also compare against the live issuer, because it may run ahead of the code you
 have locally:
@@ -534,7 +541,7 @@ curl -s https://auth.example.org/oauth/jwks
 - [ ] Backchannel receiver still verifies `logout_token` and
       `revocation_token` with the current JWKS and types.
 - [ ] Access-token denylist still keyed by `jti` and honors `valid_after`.
-- [ ] Resource webhook URL still verified and reachable from basis-auth.
+- [ ] Every resource webhook URL still verified and reachable from basis-auth.
 - [ ] Internal API callers still send `X-Basis-Resource` and the current secret.
 - [ ] Management callers still send a valid actor token in
       `X-Basis-Actor-Token`.
@@ -612,7 +619,10 @@ the change window. If validation fails:
 
 ## 11. Troubleshooting
 
-Numeric codes are application codes, not HTTP status codes.
+Numeric codes are application codes, not HTTP status codes. When login fails,
+the error page shows the numeric code, error name, and description for
+administrators so they can identify the failing resource or client. Never paste
+tokens, codes, secrets, or cookies into a support request.
 
 | Code | Meaning | Fix |
 | --- | --- | --- |
@@ -624,7 +634,7 @@ Numeric codes are application codes, not HTTP status codes.
 | `14100` | Redirect URI missing or unregistered | Compare character-for-character. |
 | `14401` | Scope not allowed | Align resource scopes, client scopes, and request. |
 | `14407` | Resource not registered | Register the audience. |
-| `14408` | Resource has no valid backchannel logout URL | Configure and verify the webhook. |
+| `14408` | Resource has no valid backchannel logout URL | Configure and verify at least one webhook. |
 | `14429` | Unsupported response type | Send `response_type=code`. |
 | `14501` | Resource not registered for this client | Add the audience to the client. |
 | `2400` | Interaction missing or expired | Restart authorization. |

@@ -221,7 +221,7 @@ export function createInternalApplicationService(
     const { row, metadata, membership } = await readApplication(clientId, actor);
     const own = Boolean(membership);
     const isAdmin = membership?.role === "role.ADMIN";
-    const [resources, allClients, linkedOrganizations, availableOrganizations, permissions, defaults] = await Promise.all([
+    const [resources, allClients, linkedOrganizations, availableOrganizations, permissions, defaults, availableResources] = await Promise.all([
       db.select().from(resourceServers).where(inArray(resourceServers.audience, row.resources)),
       db.select({ clientId: oidcClients.clientId, resources: oidcClients.resources }).from(oidcClients),
       db.select({ organizationId: organizations.organizationId }).from(oidcClientOrganizations)
@@ -232,7 +232,14 @@ export function createInternalApplicationService(
         .from(oidcPermissions).where(eq(oidcPermissions.clientId, clientId)),
       db.select({ permission: defaultPermissions.permission })
         .from(defaultPermissions).where(eq(defaultPermissions.applicationId, clientId)),
+      db.select().from(resourceServers),
     ]);
+    const claimsByAudience = new Map<string, number>();
+    for (const client of allClients) {
+      for (const audience of client.resources ?? []) {
+        claimsByAudience.set(audience, (claimsByAudience.get(audience) ?? 0) + 1);
+      }
+    }
     const ownerIds = metadata.owners.map((owner) => owner.id);
     const people = ownerIds.length ? await db.select({
       id: users.id,
@@ -273,11 +280,11 @@ export function createInternalApplicationService(
         name: resource.name,
         availableScopes: resource.scopes,
         grantedScopes: assignedScopes(metadata, resource.audience),
-        claimCount: allClients.filter((client) => client.resources.includes(resource.audience)).length,
+        claimCount: claimsByAudience.get(resource.audience) ?? 0,
         canUpdate: canAccessResource(actor, resource, "update"),
         canDelete: canAccessResource(actor, resource, "delete"),
       })),
-      availableResources: (await db.select().from(resourceServers)).filter((resource) => canAccessResource(actor, resource, "read"))
+      availableResources: availableResources.filter((resource) => canAccessResource(actor, resource, "read"))
         .map((resource) => ({ resourceId: resource.audience, name: resource.name, availableScopes: resource.scopes })),
       permissions,
       defaultPermissions: defaults.map(({ permission }) => permission).sort(),
@@ -377,7 +384,8 @@ export function createInternalApplicationService(
   }
 
   async function assertScopesCoverAssignments(tx: Transaction, resource: ResourceRow, nextScopes: string[]) {
-    const removedScopes = new Set(resource.scopes.filter((scope) => !nextScopes.includes(scope)));
+    const nextSet = new Set(nextScopes);
+    const removedScopes = new Set(resource.scopes.filter((scope) => !nextSet.has(scope)));
     if (!removedScopes.size) return;
     const clients = await attachedClients(tx, resource.audience);
     for (const client of clients) {
@@ -395,7 +403,8 @@ export function createInternalApplicationService(
       resourceId: resource.audience,
       name: resource.name,
       availableScopes: resource.scopes,
-      backchannelLogoutUri: resource.backchannelLogoutUri,
+      backchannelLogoutUris: resource.backchannelLogoutUris,
+      backchannelLogoutUri: resource.backchannelLogoutUris[0] ?? null,
       capabilities: {
         update: canAccessResource(actor, resource, "update"),
         delete: canAccessResource(actor, resource, "delete"),
@@ -430,46 +439,63 @@ export function createInternalApplicationService(
     });
   }
 
-  async function saveLogoutUri(
+  function sameUris(left: string[], right: string[]) {
+    if (left.length !== right.length) return false;
+    const rightSet = new Set(right);
+    return left.every((uri) => rightSet.has(uri));
+  }
+
+  async function saveLogoutUris(
     resourceId: string,
-    uri: string | null,
+    uris: string[],
     authorize: (resource: ResourceRow | undefined) => ResourceRow,
     skipUnchanged = false,
   ) {
     const previous = authorize(await resourceRow(resourceId));
-    if (skipUnchanged && previous.backchannelLogoutUri === uri) return { backchannelLogoutUri: uri };
-    if (uri !== null) {
+    const next = [...new Set(uris)];
+    if (skipUnchanged && sameUris(previous.backchannelLogoutUris, next)) {
+      return { backchannelLogoutUris: next };
+    }
+    await Promise.all(next.map(async (uri) => {
       const result = await backchannel.verifyDestination(resourceId, uri);
       if (result === "timeout") {
         throw new InternalApplicationError(504, "backchannel_timeout", "The resource did not complete webhook verification in time");
       }
       if (result !== "verified") {
-        throw new InternalApplicationError(502, "backchannel_test_failed", "The webhook test failed. The endpoint must accept the test with HTTP 202");
+        throw new InternalApplicationError(502, "backchannel_test_failed", `The webhook test failed for ${uri}. The endpoint must accept the test with HTTP 202`);
       }
-    }
+    }));
 
     return db.transaction(async (tx) => {
       const [resource] = await tx.select().from(resourceServers).where(eq(resourceServers.audience, resourceId)).for("update");
       const current = authorize(resource);
-      if (uri !== null && (current.secretHash !== previous.secretHash || current.backchannelLogoutUri !== previous.backchannelLogoutUri)) {
-        throw new InternalApplicationError(409, "backchannel_changed", "The resource secret or webhook changed during verification. Try again");
+      if (current.secretHash !== previous.secretHash || !sameUris(current.backchannelLogoutUris, previous.backchannelLogoutUris)) {
+        throw new InternalApplicationError(409, "backchannel_changed", "The resource secret or webhooks changed during verification. Try again");
       }
-      await tx.update(resourceServers).set({ backchannelLogoutUri: uri, updatedAt: new Date() })
+      await tx.update(resourceServers).set({ backchannelLogoutUris: next, updatedAt: new Date() })
         .where(eq(resourceServers.audience, resourceId));
-      return { backchannelLogoutUri: uri };
+      return { backchannelLogoutUris: next };
     });
   }
 
-  async function setResourceLogoutUri(resourceId: string, actor: ApplicationActor, uri: string | null) {
+  async function setResourceLogoutUris(resourceId: string, actor: ApplicationActor, uris: string[]) {
     requireScopedAccess(actor, "Resources", "update");
-    return saveLogoutUri(resourceId, uri, (resource) => requireResourceAccess(actor, resource, "update"));
+    return saveLogoutUris(resourceId, uris, (resource) => requireResourceAccess(actor, resource, "update"));
   }
 
-  function reconcileConfiguredLogoutUri(resourceId: string, uri: string) {
-    return saveLogoutUri(resourceId, uri, (resource) => {
+  function reconcileConfiguredLogoutUris(resourceId: string, uris: string[]) {
+    return saveLogoutUris(resourceId, uris, (resource) => {
       if (!resource) throw new InternalApplicationError(404, "resource_not_found", "Resource not found");
       return resource;
     }, true);
+  }
+
+  async function setResourceLogoutUri(resourceId: string, actor: ApplicationActor, uri: string | null) {
+    return setResourceLogoutUris(resourceId, actor, uri === null ? [] : [uri]);
+  }
+
+  function reconcileConfiguredLogoutUri(resourceId: string, uri: string) {
+    return reconcileConfiguredLogoutUris(resourceId, [uri]);
   }
 
   async function rotateResourceSecret(resourceId: string, actor: ApplicationActor) {
@@ -572,7 +598,8 @@ export function createInternalApplicationService(
         throw new InternalApplicationError(400, "invalid_scopes", "Scopes contain an unavailable resource");
       }
       for (const resource of visible) {
-        if (Object.hasOwn(input, resource.audience) && input[resource.audience]!.some((scope) => !resource.scopes.includes(scope))) {
+        const registered = new Set(resource.scopes);
+        if (Object.hasOwn(input, resource.audience) && input[resource.audience]!.some((scope) => !registered.has(scope))) {
           throw new InternalApplicationError(400, "invalid_scopes", `Unsupported scope for ${resource.audience}`);
         }
       }
@@ -667,8 +694,8 @@ export function createInternalApplicationService(
     rotateSecret, removeSecret, addOwner, updateOwner, removeOwner, attachResource, createResource,
     updateResource, removeResource, updateScopes, createPermission, updatePermission,
     deletePermission, updateDefaultPermissions, updateRedirectUris, listResources, resourceDetail,
-    updateResourceScope, setResourceLogoutUri, rotateResourceSecret, deleteResource,
-    validateBackchannel: backchannel.validate, reconcileConfiguredLogoutUri,
+    updateResourceScope, setResourceLogoutUri, setResourceLogoutUris, rotateResourceSecret, deleteResource,
+    validateBackchannel: backchannel.validate, reconcileConfiguredLogoutUri, reconcileConfiguredLogoutUris,
   };
 }
 

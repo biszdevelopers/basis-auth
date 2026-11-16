@@ -122,6 +122,8 @@ export const resourceSchema = z.object({
   audience: z.string().min(1),
   name: z.string().trim().min(1).optional(),
   scopes: z.array(z.string().min(1)).default([]),
+  backchannelLogoutUris: z.array(backchannelLogoutUriSchema).optional(),
+  // Legacy single-URL form; prefer backchannelLogoutUris.
   backchannelLogoutUri: backchannelLogoutUriSchema.nullable().optional(),
 });
 
@@ -164,6 +166,15 @@ export type ClientSeed = z.infer<typeof clientSchema>;
 export type ResourceSeed = z.infer<typeof resourceSchema>;
 export type PermissionDefinitions = z.infer<typeof permissionDefinitionsSchema>;
 export type BootstrapPermissionGrant = z.infer<typeof bootstrapGrantSchema>;
+
+export function configuredLogoutUris(resource: ResourceSeed): string[] | undefined {
+  if (resource.backchannelLogoutUris !== undefined) {
+    return [...new Set(resource.backchannelLogoutUris)];
+  }
+  if (resource.backchannelLogoutUri === null) return [];
+  if (resource.backchannelLogoutUri !== undefined) return [resource.backchannelLogoutUri];
+  return undefined;
+}
 
 export const DEVELOPMENT_DEMO_CLIENT_ID = "basis-auth-dev-demo";
 export const DEVELOPMENT_DEMO_PATH = "/dev/demo";

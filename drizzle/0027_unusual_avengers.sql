@@ -1,0 +1,2 @@
+CREATE INDEX "authorization_sessions_active_user_idx" ON "authorization_sessions" USING btree ("user_id") WHERE "authorization_sessions"."revoked_at" is null;--> statement-breakpoint
+CREATE INDEX "authorization_sessions_active_client_idx" ON "authorization_sessions" USING btree ("client_id") WHERE "authorization_sessions"."revoked_at" is null;

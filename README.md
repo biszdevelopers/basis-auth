@@ -67,7 +67,7 @@ Production must set `NODE_ENV=production`, an HTTPS `OIDC_ISSUER`, persistent pr
 
 `OIDC_RESOURCES_JSON` declares API audiences, display names, and the scopes each API accepts. A client claims one or more resources, and `OIDC_CLIENTS_JSON` declares its allowed scopes per resource through `resourceScopes` (the legacy flat `scopes` list remains a fallback). The standard `openid`, `profile`, `email`, and `offline_access` scopes are public to every registered client and do not need to be listed in either configuration.
 
-A resource can optionally set `backchannelLogoutUri` in `OIDC_RESOURCES_JSON`. Use HTTPS or an HTTP URL with the exact hostname `localhost`. Basis Auth verifies new values from this setting after the internal listener starts. Set it to `null` to clear a stored callback. Access tokens default to 60 minutes, configurable with `ACCESS_TOKEN_LIFETIME_MS`.
+A resource can optionally set one or more `backchannelLogoutUris` in `OIDC_RESOURCES_JSON`; the legacy single `backchannelLogoutUri` field is still accepted. Use HTTPS or an HTTP URL with the exact hostname `localhost`. Basis Auth verifies each new URL after the internal listener starts. Set the list to `[]` to clear stored callbacks. Access tokens default to 60 minutes, configurable with `ACCESS_TOKEN_LIFETIME_MS`.
 
 Before upgrading a database with existing resource servers, set `BASIS_RESOURCE_ROOT_USER_ID` to the UUID of the existing root user and set `MANAGEMENT_PORTAL_CLIENT_ID` to the management portal client. The migrations assign existing resource servers to that user and backfill the portal's own-application and own-resource grants. Existing portal sessions pick up the new grants when their access token refreshes or the user signs in again.
 
@@ -183,7 +183,7 @@ Management routes for users, applications, and resources require the resource cr
 
 The resource-secret migration gives existing resources the temporary secret `sk-1`. Rotate every production resource in the portal's **Secret** tab, copy the value Basis Auth issues, and update each caller immediately. For the portal's own resource, set `BASIS_AUTH_RESOURCE_SECRET` to that value. For first-time setup or recovery when the portal cannot authenticate, run `bun run resources:rotate-secret '<resource audience>'` with access to the Basis Auth database. The command issues and prints the new secret once. Restarts preserve the stored hash.
 
-`POST /internal/users/:userId/logout` takes a JSON body such as `{"audience":"urn:basis:api:projects"}`. The body audience must match the caller's authenticated resource. Basis Auth sends a form-encoded `logout_token` signed with its OIDC key and bound to the resource audience. The resource handles session termination after validating the token. The internal API returns `204` on delivery, `404` for an unknown user or resource, `409` when the resource has no callback, or `502` if delivery fails.
+`POST /internal/users/:userId/logout` takes a JSON body such as `{"audience":"urn:basis:api:projects"}`. The body audience must match the caller's authenticated resource. Basis Auth sends a form-encoded `logout_token` signed with its OIDC key and bound to the resource audience, to every configured callback. The resource handles session termination after validating the token. The internal API returns `204` when at least one delivery succeeds, `404` for an unknown user or resource, `409` when the resource has no callback, or `502` if every delivery fails.
 
 Basis Auth verifies a new logout webhook before saving it. See the [backchannel logout receiver guide](./examples/backchannel-logout.md) for the test request, HMAC callback, and logout token contract.
 
@@ -219,7 +219,7 @@ These are NOT Http response codes.
 | 14429 | unsupported_response_type | Unsupported response type |
 | 14401 | invalid_scope | Client requests one or more scopes that is not configured or permitted |
 | 14407 | unknown_resource | The requested resource audience has no `resource_servers` row. The error names the audience; register it by re-saving the client via `bun run clients` or adding it to `OIDC_RESOURCES_JSON` and restarting. |
-| 14408 | invalid_resource | The resource has no valid backchannel logout URL. Configure its webhook before attempting an authorization-code login. This also applies to the development demo and the portal's own resource. |
+| 14408 | invalid_resource | The resource has no valid backchannel logout URL. An administrator must add and verify at least one callback under Resource Servers → Backchannel or `OIDC_RESOURCES_JSON` `backchannelLogoutUris`. This also applies to the development demo and the portal's own resource. |
 | 14501 | invalid_target | One or more resources is not registered for this application |
 | 2400 | invalid_request | Frontend authentication flow cookie not found or expired |
 | 50040 | server_error | Internal server error occured during login, such as connection error with microsoft login / authentication endpoint |

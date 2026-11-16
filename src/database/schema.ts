@@ -87,6 +87,7 @@ export const oidcClients = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
+    index("oidc_clients_resources_gin").using("gin", table.resources),
     check(
       "oidc_clients_filter_mode_check",
       sql`${table.filterMode} in ('whitelist', 'blacklist') or ${table.filterMode} is null`,
@@ -179,7 +180,7 @@ export const resourceServers = pgTable("resource_servers", {
   scopes: jsonb("scopes").notNull().$type<string[]>(),
   secretHash: text("secret_hash").notNull(),
   createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
-  backchannelLogoutUri: text("backchannel_logout_uri"),
+  backchannelLogoutUris: jsonb("backchannel_logout_uris").notNull().default([]).$type<string[]>(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -277,6 +278,8 @@ export const authorizationSessions = pgTable(
   (table) => [
     index("authorization_sessions_user_id_idx").on(table.userId),
     index("authorization_sessions_client_id_idx").on(table.clientId),
+    index("authorization_sessions_active_user_idx").on(table.userId).where(sql`${table.revokedAt} is null`),
+    index("authorization_sessions_active_client_idx").on(table.clientId).where(sql`${table.revokedAt} is null`),
   ],
 );
 
@@ -305,6 +308,7 @@ export const accessTokenRevocations = pgTable(
     expiresAt: timestamp("expires_at", { withTimezone: true }),
     nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
     deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    deliveredUris: jsonb("delivered_uris").notNull().default([]).$type<string[]>(),
   },
   (table) => [
     index("access_token_revocations_pending_idx").on(table.nextAttemptAt).where(sql`${table.deliveredAt} is null`),

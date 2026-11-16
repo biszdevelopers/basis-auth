@@ -21,18 +21,17 @@ export async function postBackchannel(uri: string, body: URLSearchParams) {
 
 export function createLogoutService(db: Database, keys: Pick<KeyService, "issueLogoutToken">) {
   return async function executeLogout(userId: string, audience: string) {
-    const [resource] = await db.select({ uri: resourceServers.backchannelLogoutUri })
+    const [resource] = await db.select({ uris: resourceServers.backchannelLogoutUris })
       .from(resourceServers)
       .where(eq(resourceServers.audience, audience))
       .limit(1);
     if (!resource) return "unknown_resource";
-    if (resource.uri === null) return "logout_not_configured";
-    const uri = backchannelLogoutUriSchema.safeParse(resource.uri);
-    if (!uri.success) return "logout_delivery_failed";
+    const uris = resource.uris.filter((uri) => backchannelLogoutUriSchema.safeParse(uri).success);
+    if (!uris.length) return "logout_not_configured";
 
     const logoutToken = await keys.issueLogoutToken(userId, audience);
-    return await postBackchannel(uri.data, new URLSearchParams({ logout_token: logoutToken }))
-      ? "delivered"
-      : "logout_delivery_failed";
+    const body = new URLSearchParams({ logout_token: logoutToken });
+    const results = await Promise.all(uris.map((uri) => postBackchannel(uri, body)));
+    return results.some(Boolean) ? "delivered" : "logout_delivery_failed";
   };
 }

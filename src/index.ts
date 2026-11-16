@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { serve } from "@hono/node-server";
 import { createApp } from "./app.js";
-import { loadConfig } from "./config.js";
+import { configuredLogoutUris, loadConfig } from "./config.js";
 import { createDatabase } from "./database/client.js";
 import { createEmailDomainService } from "./database/emailDomains.js";
 import { migrateDatabase } from "./database/migrate.js";
@@ -82,12 +82,13 @@ flushRevocations();
 
 async function reconcileConfiguredLogoutUris() {
   for (const resource of config.resources) {
-    if (!resource.backchannelLogoutUri) continue;
+    const uris = configuredLogoutUris(resource);
+    if (!uris?.length) continue;
     try {
-      await internalApplications.reconcileConfiguredLogoutUri(resource.audience, resource.backchannelLogoutUri);
+      await internalApplications.reconcileConfiguredLogoutUris(resource.audience, uris);
     } catch (error) {
       const reason = error instanceof InternalApplicationError ? error.message : "Verification could not be completed";
-      console.warn("Configured logout webhook was not saved", resource.audience, reason);
+      console.warn("Configured logout webhooks were not saved", resource.audience, reason);
     }
   }
 }

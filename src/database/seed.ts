@@ -2,6 +2,7 @@ import { promisify } from "node:util";
 import { randomBytes, scrypt as scryptCallback, timingSafeEqual } from "node:crypto";
 import { and, eq, inArray, notInArray, sql } from "drizzle-orm";
 import type { ClientSeed, PermissionDefinitions, ResourceSeed } from "../config.js";
+import { configuredLogoutUris } from "../config.js";
 import type { Database } from "./client.js";
 import { defaultPermissions, oidcClientOrganizations, oidcClients, oidcPermissions, organizations, resourceServers, users } from "./schema.js";
 import { portalScopedDefaults, portalScopedDefinitions, retiredPortalPermissions } from "../internal/portal-permissions.js";
@@ -100,10 +101,11 @@ export async function seedConfiguration(
     ? await db.select({ id: users.id }).from(users).where(eq(users.id, portal.resourceRootUserId)).limit(1)
     : [];
   for (const resource of resources) {
+    const configuredUris = configuredLogoutUris(resource);
     const settings = {
       name: resource.name ?? resource.audience,
       scopes: resource.scopes,
-      backchannelLogoutUri: resource.backchannelLogoutUri === null ? null : undefined,
+      ...(configuredUris === undefined ? {} : { backchannelLogoutUris: configuredUris }),
     };
     await db
       .insert(resourceServers)
@@ -111,6 +113,7 @@ export async function seedConfiguration(
         audience: resource.audience,
         createdBy: root?.id,
         secretHash: await hashNewResourceSecret(),
+        backchannelLogoutUris: configuredUris ?? [],
         ...settings,
       })
       .onConflictDoUpdate({

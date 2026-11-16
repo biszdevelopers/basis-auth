@@ -346,7 +346,8 @@ it("stops reloading and logs the error when the interaction stays unavailable", 
     await waitFor(() => expect(errorSpy).toHaveBeenCalledWith(
       "The sign-in session is unavailable. Reload the page to try again. (2400)",
     ));
-    expect(screen.queryByText(/sign-in session is unavailable/)).not.toBeInTheDocument();
+    expect(screen.getByText(/sign-in session is unavailable/)).toBeInTheDocument();
+    expect(screen.getByText(/Error 2400/)).toBeInTheDocument();
     expect(replaceMock).toHaveBeenCalledTimes(2);
   } finally {
     sessionStorage.clear();

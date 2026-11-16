@@ -1,0 +1,1 @@
+ALTER TABLE "resource_servers" DROP COLUMN "backchannel_logout_uri";

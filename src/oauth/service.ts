@@ -46,7 +46,7 @@ const identityScopes = publicScopes;
 async function requireLoginResource(database: Pick<Database, "select">, audience: string) {
   const [resource] = await database.select({
     scopes: resourceServers.scopes,
-    backchannelLogoutUri: resourceServers.backchannelLogoutUri,
+    backchannelLogoutUris: resourceServers.backchannelLogoutUris,
   }).from(resourceServers).where(eq(resourceServers.audience, audience)).limit(1);
   if (!resource) {
     throw new OAuthError(
@@ -56,10 +56,12 @@ async function requireLoginResource(database: Pick<Database, "select">, audience
       14407,
     );
   }
-  if (!backchannelLogoutUriSchema.safeParse(resource.backchannelLogoutUri).success) {
+  if (!resource.backchannelLogoutUris.some((uri) => backchannelLogoutUriSchema.safeParse(uri).success)) {
     throw new OAuthError(
       "invalid_resource",
-      `Resource server "${audience}" requires a valid backchannel logout URL`,
+      `Resource server "${audience}" has no verified backchannel logout URL. ` +
+        "An administrator must add and verify at least one callback under " +
+        "Resource Servers -> Backchannel or OIDC_RESOURCES_JSON backchannelLogoutUris.",
       400,
       14408,
     );
