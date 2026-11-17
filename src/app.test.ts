@@ -296,7 +296,8 @@ describe("unexpected backend failures", () => {
     expect(response.status).toBe(500);
     expect(response.headers.get("content-type")).toContain("text/html");
     const html = await response.text();
-    expect(html).toContain('go back home</a> (500)</h1>');
+    expect(html).toContain('go back home</a></h1>');
+    expect(html).toContain("<script>console.error(");
     expect(html).not.toContain("server_error");
     expect(html).not.toContain("test failure");
     log.mockRestore();
@@ -1030,7 +1031,8 @@ describe("not-found responses", () => {
     expect(response.status).toBe(404);
     expect(response.headers.get("content-type")).toContain("text/html");
     const html = await response.text();
-    expect(html).toContain('go back home</a> (404)</h1>');
+    expect(html).toContain('go back home</a></h1>');
+    expect(html).toContain("<script>console.error(");
     expect(html).not.toContain("not_found");
   });
 

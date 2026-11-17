@@ -43,6 +43,9 @@ it("logs out from the error message with a primary text button", async () => {
   );
 
   const logoutButton = screen.getByRole("button", { name: /Log out/ });
+  expect(screen.getByText("Unable to Login")).toBeInTheDocument();
+  expect(screen.queryByText(/access_denied|Error 0/)).not.toBeInTheDocument();
+  expect(screen.queryByText("This account is not allowed to sign in to this application.")).not.toBeInTheDocument();
   expect(logoutButton).toHaveAttribute("data-variant", "default");
   fireEvent.click(logoutButton);
 
@@ -53,7 +56,7 @@ it("logs out from the error message with a primary text button", async () => {
   expect(onLogout).toHaveBeenCalledOnce();
 });
 
-it("does not show logout for errors unrelated to the user account", () => {
+it("keeps request diagnostics in the console and omits logout for non-account errors", () => {
   const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
   try {
     render(
@@ -76,7 +79,9 @@ it("does not show logout for errors unrelated to the user account", () => {
     );
 
     expect(screen.queryByRole("button", { name: /Log out/ })).not.toBeInTheDocument();
-    expect(screen.queryByText("The authorization request is invalid. (2400)")).not.toBeInTheDocument();
+    expect(screen.getByText("Unable to Login")).toBeInTheDocument();
+    expect(screen.queryByText(/Error 2400|invalid_request/)).not.toBeInTheDocument();
+    expect(screen.queryByText("The authorization request is invalid.")).not.toBeInTheDocument();
     expect(errorSpy).toHaveBeenCalledWith("The authorization request is invalid. (2400)");
   } finally {
     errorSpy.mockRestore();
@@ -346,8 +351,8 @@ it("stops reloading and logs the error when the interaction stays unavailable", 
     await waitFor(() => expect(errorSpy).toHaveBeenCalledWith(
       "The sign-in session is unavailable. Reload the page to try again. (2400)",
     ));
-    expect(screen.getByText(/sign-in session is unavailable/)).toBeInTheDocument();
-    expect(screen.getByText(/Error 2400/)).toBeInTheDocument();
+    expect(screen.getByText("Unable to Login")).toBeInTheDocument();
+    expect(screen.queryByText(/sign-in session is unavailable|Error 2400/)).not.toBeInTheDocument();
     expect(replaceMock).toHaveBeenCalledTimes(2);
   } finally {
     sessionStorage.clear();

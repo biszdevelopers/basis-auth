@@ -33,6 +33,11 @@ const INTERACTION_COOKIE = "basis_bridge_id";
 const ERROR_COOKIE = "basis_bridge_error";
 const DEVELOPMENT_DEMO_COOKIE = "basis_dev_demo";
 
+function renderBrowserErrorPage(error: NonNullable<Parameters<typeof renderErrorPage>[0]>) {
+  // The shared template also logs the payload to the console.
+  return renderErrorPage(error).replace(` (${error.code})</h1>`, "</h1>");
+}
+
 function escapeHtml(value: string) {
   return value.replace(/[&<>"']/g, (character) => ({
     "&": "&amp;",
@@ -634,7 +639,7 @@ export function createApp(
   app.notFound(async (c) => {
     if (acceptsHtml(c)) {
       return c.html(
-        renderErrorPage({
+        renderBrowserErrorPage({
           status: 404,
           code: 404,
           error: "not_found",
@@ -660,7 +665,7 @@ export function createApp(
     const accept = c.req.header("accept") ?? "";
     if (accept.includes("text/html")) {
       return c.html(
-        renderErrorPage({
+        renderBrowserErrorPage({
           status: 500,
           code: 500,
           error: "server_error",

@@ -548,6 +548,8 @@ Run against the target issuer before declaring the integration done:
       configured.
 - [ ] Unregistered resources, scopes, and redirect URIs fail closed with the
       documented codes.
+- [ ] Sign-in failures show recovery guidance. Technical details are available
+      in the browser's developer console.
 - [ ] After a scope-table upgrade, existing registered scopes can still be
       requested for their original audiences.
 - [ ] A resource editor can set, change, and clear an Entra scope mapping
@@ -678,10 +680,10 @@ the change window. If validation fails:
 
 ## 11. Troubleshooting
 
-Numeric codes are application codes, not HTTP status codes. When login fails,
-the error page shows the numeric code, error name, and description for
-administrators so they can identify the failing resource or client. Never paste
-tokens, codes, secrets, or cookies into a support request.
+The sign-in page shows recovery guidance. When sign-in fails, open the
+browser's developer console for the diagnostic description and numeric
+application code. Never paste tokens, authorization codes, secrets, or cookies
+into a support request.
 
 | Code | Meaning | Fix |
 | --- | --- | --- |

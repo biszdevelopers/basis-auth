@@ -216,14 +216,6 @@ export function LoginCard({
                                     {hold === "logout" ? <Spinner /> : "Log out and switch an account"}
                                 </Button>
                             )}
-                            <div className="mt-4 rounded-md border border-border bg-muted/40 p-2">
-                                <Label className="font-mono text-xs">
-                                    Error {stat.error.code} · {stat.error.error}
-                                </Label>
-                                <p className="mt-1 text-xs text-muted-foreground break-words">
-                                    {stat.error.error_description}
-                                </p>
-                            </div>
                         </div>
                     )}
                     {stat.page == "login" && (
