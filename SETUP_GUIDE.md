@@ -82,6 +82,26 @@ A resource declares an audience and its API scopes. A client declares redirect
 URIs, resources, scopes, permission definitions, consent behavior,
 organizations, and account filters.
 
+Basis Auth stores one row per audience and scope in `resource_server_scopes`.
+The `upstream_scope` column can store a Microsoft Entra scope name. A null
+value means the scope has no upstream mapping. In the portal, open
+**Resource Servers**, select the resource, and use the **Scopes** tab to set
+an optional Entra scope when adding a local scope. Edit the row to change the
+mapping, or save a blank value to clear it.
+
+The mapping is stored as metadata. Downstream clients request the local scope
+name, and Basis Auth uses it for authorization and token claims. The mapping
+does not change which scopes Basis Auth requests from Microsoft Entra.
+Configuration seeding preserves mappings for scopes that remain registered.
+Removing a scope deletes its mapping.
+
+On upgrade, stop instances running the old code before applying migration
+`0028_resource-server-scopes`. The new server applies it at startup, or an
+operator can run `bun run db:migrate` with `DATABASE_URL` set. The migration
+copies existing scope names with null mappings before removing
+`resource_servers.scopes`. The portal, CLI, and `OIDC_RESOURCES_JSON` still
+accept local scope names.
+
 Interactive:
 
 ```bash
@@ -460,11 +480,46 @@ X-Basis-Resource: <URL-encoded resource audience>
 - `POST /internal/users/:userId/logout` with `{"audience":"..."}` delivers a
   logout token for the caller's own audience. `204` delivered, `404` unknown
   user/resource, `409` no callback, `502` delivery failed.
-- Management routes under `/internal/management` and `/internal/applications`
+- Management routes under `/internal/management`, `/internal/applications`,
+  and `/internal/resources`
   require the portal resource credential and a user access token in
   `X-Basis-Actor-Token: Bearer ...`.
 - `/internal/backchannel/validate` is the webhook proof endpoint from
   section 5.1.
+
+### Resource scope mappings
+
+`GET /internal/resources/:resourceId` and
+`PATCH /internal/resources/:resourceId/scopes` return a `resource` with
+`availableScopes` and an `upstreamScopes` object keyed by local scope name.
+Each registered scope has a string or null value. URL-encode the resource
+audience in the path. Reads require resource read access and edits also
+require resource update access.
+
+Example request bodies for the scopes endpoint
+
+```json
+{"action":"add","scope":"calendar.read","upstreamScope":"Calendar.read"}
+```
+
+```json
+{"action":"update","scope":"calendar.read","upstreamScope":null}
+```
+
+The `add` action accepts an omitted mapping. This leaves an existing mapping
+in place or creates a new unmapped scope. The `update` action requires a
+string or null and returns `404 scope_not_found` for an unregistered scope.
+A string must contain one OAuth scope token after trimming. The `remove`
+action deletes the scope and mapping, subject to the existing checks for
+attached applications.
+
+`POST` and `PATCH /internal/applications/:clientId/resources` also accept
+an optional `upstreamScopes` object alongside the existing `availableScopes`
+array. Every mapping key must appear in that array or the request returns
+`400 invalid_request`. A null value clears the mapping, and omitting a key
+preserves any mapping for that retained scope. Application details return
+the map with each visible resource definition. Client grants still use
+local scope names in `PUT /internal/applications/:clientId/scopes`.
 
 Keep the internal listener on loopback or a protected private network. Treat
 the resource secret as a credential.
@@ -493,6 +548,10 @@ Run against the target issuer before declaring the integration done:
       configured.
 - [ ] Unregistered resources, scopes, and redirect URIs fail closed with the
       documented codes.
+- [ ] After a scope-table upgrade, existing registered scopes can still be
+      requested for their original audiences.
+- [ ] A resource editor can set, change, and clear an Entra scope mapping
+      and read back the saved value.
 
 ## 10. Updating an integration when basis-auth changes
 

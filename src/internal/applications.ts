@@ -3,6 +3,7 @@ import { DelegatedPermissionSet, type Permission } from "@basis/schema/permissio
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { isEphemeralLocalhostRedirectUri } from "../config.js";
 import type { Database } from "../database/client.js";
+import { replaceResourceScopes, resourceWithScopeMappings, resourceWithScopes } from "../database/resource-scopes.js";
 import { defaultPermissions, oidcClientOrganizations, oidcClients, oidcPermissions, organizations, resourceServers, users } from "../database/schema.js";
 import { generateSecret, hashClientSecret, hashNewResourceSecret, type ClientOwner, type StoredClientMetadata } from "../database/seed.js";
 import { scopesCover } from "../oauth/scopes.js";
@@ -20,6 +21,17 @@ export const applicationPermissions = {
 export type ApplicationActor = { id: string; permissions: string[] };
 type ScopedAction = "read" | "update" | "delete";
 type ResourceRow = typeof resourceServers.$inferSelect;
+type ResourceWithScopes = ResourceRow & { scopes: string[] };
+type ResourceDefinitionInput = {
+  resourceId: string;
+  name: string;
+  availableScopes: string[];
+  upstreamScopes?: Record<string, string | null>;
+};
+type ResourceScopeChange =
+  | { action: "add"; scope: string; upstreamScope?: string | null }
+  | { action: "update"; scope: string; upstreamScope: string | null }
+  | { action: "remove"; scope: string };
 type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
 export type ApplicationSettingsInput = {
   name: string;
@@ -91,7 +103,7 @@ function canAccessResource(actor: ApplicationActor, resource: ResourceRow, actio
   return hasScopedPermission(actor, "Resources", action, resource.createdBy === actor.id);
 }
 
-function requireResourceAccess(actor: ApplicationActor, resource: ResourceRow | undefined, action: ScopedAction) {
+function requireResourceAccess<T extends ResourceRow>(actor: ApplicationActor, resource: T | undefined, action: ScopedAction) {
   if (!resource || !canAccessResource(actor, resource, "read")) {
     throw new InternalApplicationError(404, "resource_not_found", "Resource not found");
   }
@@ -201,7 +213,7 @@ export function createInternalApplicationService(
     };
     await db.transaction(async (tx) => {
       await tx.insert(resourceServers).values({
-        audience: resourceId, name: `${input.name} API`, scopes: [], createdBy: actor.id, secretHash: resourceSecretHash,
+        audience: resourceId, name: `${input.name} API`, createdBy: actor.id, secretHash: resourceSecretHash,
       });
       await tx.insert(oidcClients).values({
         clientId,
@@ -222,7 +234,7 @@ export function createInternalApplicationService(
     const own = Boolean(membership);
     const isAdmin = membership?.role === "role.ADMIN";
     const [resources, allClients, linkedOrganizations, availableOrganizations, permissions, defaults, availableResources] = await Promise.all([
-      db.select().from(resourceServers).where(inArray(resourceServers.audience, row.resources)),
+      db.select(resourceWithScopeMappings).from(resourceServers).where(inArray(resourceServers.audience, row.resources)),
       db.select({ clientId: oidcClients.clientId, resources: oidcClients.resources }).from(oidcClients),
       db.select({ organizationId: organizations.organizationId }).from(oidcClientOrganizations)
         .innerJoin(organizations, eq(oidcClientOrganizations.organizationId, organizations.id))
@@ -232,7 +244,7 @@ export function createInternalApplicationService(
         .from(oidcPermissions).where(eq(oidcPermissions.clientId, clientId)),
       db.select({ permission: defaultPermissions.permission })
         .from(defaultPermissions).where(eq(defaultPermissions.applicationId, clientId)),
-      db.select().from(resourceServers),
+      db.select(resourceWithScopeMappings).from(resourceServers),
     ]);
     const claimsByAudience = new Map<string, number>();
     for (const client of allClients) {
@@ -279,13 +291,19 @@ export function createInternalApplicationService(
         resourceId: resource.audience,
         name: resource.name,
         availableScopes: resource.scopes,
+        upstreamScopes: resource.upstreamScopes,
         grantedScopes: assignedScopes(metadata, resource.audience),
         claimCount: claimsByAudience.get(resource.audience) ?? 0,
         canUpdate: canAccessResource(actor, resource, "update"),
         canDelete: canAccessResource(actor, resource, "delete"),
       })),
       availableResources: availableResources.filter((resource) => canAccessResource(actor, resource, "read"))
-        .map((resource) => ({ resourceId: resource.audience, name: resource.name, availableScopes: resource.scopes })),
+        .map((resource) => ({
+          resourceId: resource.audience,
+          name: resource.name,
+          availableScopes: resource.scopes,
+          upstreamScopes: resource.upstreamScopes,
+        })),
       permissions,
       defaultPermissions: defaults.map(({ permission }) => permission).sort(),
       redirectUris: metadata.redirectUris,
@@ -366,8 +384,15 @@ export function createInternalApplicationService(
   }
 
   async function resourceRow(resourceId: string, database: Database | Transaction = db) {
-    const [resource] = await database.select().from(resourceServers).where(eq(resourceServers.audience, resourceId)).limit(1);
+    const [resource] = await database.select(resourceWithScopeMappings).from(resourceServers)
+      .where(eq(resourceServers.audience, resourceId)).limit(1);
     return resource;
+  }
+
+  async function lockResourceForScopeUpdate(tx: Transaction, resourceId: string, actor: ApplicationActor) {
+    const [resource] = await tx.select().from(resourceServers).where(eq(resourceServers.audience, resourceId)).for("update");
+    requireResourceAccess(actor, resource, "update");
+    return (await resourceRow(resourceId, tx))!;
   }
 
   function editResourceAssignments<T>(operation: (tx: Transaction) => Promise<T>) {
@@ -383,7 +408,7 @@ export function createInternalApplicationService(
       .where(sql`${oidcClients.resources} @> ${JSON.stringify([resourceId])}::jsonb`);
   }
 
-  async function assertScopesCoverAssignments(tx: Transaction, resource: ResourceRow, nextScopes: string[]) {
+  async function assertScopesCoverAssignments(tx: Transaction, resource: ResourceWithScopes, nextScopes: string[]) {
     const nextSet = new Set(nextScopes);
     const removedScopes = new Set(resource.scopes.filter((scope) => !nextSet.has(scope)));
     if (!removedScopes.size) return;
@@ -398,11 +423,12 @@ export function createInternalApplicationService(
     }
   }
 
-  function resourceView(resource: ResourceRow, actor: ApplicationActor) {
+  function resourceView(resource: ResourceWithScopes & { upstreamScopes: Record<string, string | null> }, actor: ApplicationActor) {
     return {
       resourceId: resource.audience,
       name: resource.name,
       availableScopes: resource.scopes,
+      upstreamScopes: resource.upstreamScopes,
       backchannelLogoutUris: resource.backchannelLogoutUris,
       backchannelLogoutUri: resource.backchannelLogoutUris[0] ?? null,
       capabilities: {
@@ -425,17 +451,24 @@ export function createInternalApplicationService(
     return resourceView(requireResourceAccess(actor, await resourceRow(resourceId), "read"), actor);
   }
 
-  async function updateResourceScope(resourceId: string, actor: ApplicationActor, input: { action: "add" | "remove"; scope: string }) {
+  async function updateResourceScope(resourceId: string, actor: ApplicationActor, input: ResourceScopeChange) {
     requireScopedAccess(actor, "Resources", "update");
     return editResourceAssignments(async (tx) => {
-      const resource = requireResourceAccess(actor, await resourceRow(resourceId, tx), "update");
-      const nextScopes = input.action === "add"
-        ? unique([...resource.scopes, input.scope])
-        : resource.scopes.filter((scope) => scope !== input.scope);
+      const resource = await lockResourceForScopeUpdate(tx, resourceId, actor);
+      let nextScopes = resource.scopes;
+      if (input.action === "add") nextScopes = unique([...nextScopes, input.scope]);
+      if (input.action === "remove") nextScopes = nextScopes.filter((scope) => scope !== input.scope);
+      if (input.action === "update" && !nextScopes.includes(input.scope)) {
+        throw new InternalApplicationError(404, "scope_not_found", "Resource scope not found");
+      }
+      const upstreamScopes = input.action !== "remove" && input.upstreamScope !== undefined
+        ? { [input.scope]: input.upstreamScope }
+        : undefined;
       await assertScopesCoverAssignments(tx, resource, nextScopes);
-      const [updated] = await tx.update(resourceServers).set({ scopes: nextScopes, updatedAt: new Date() })
-        .where(eq(resourceServers.audience, resourceId)).returning();
-      return resourceView(updated!, actor);
+      await replaceResourceScopes(tx, resourceId, nextScopes, upstreamScopes);
+      await tx.update(resourceServers).set({ updatedAt: new Date() })
+        .where(eq(resourceServers.audience, resourceId));
+      return resourceView((await resourceRow(resourceId, tx))!, actor);
     });
   }
 
@@ -535,14 +568,15 @@ export function createInternalApplicationService(
     invalidateClient(clientId);
   }
 
-  async function createResource(clientId: string, actor: ApplicationActor, input: { resourceId: string; name: string; availableScopes: string[] }) {
+  async function createResource(clientId: string, actor: ApplicationActor, input: ResourceDefinitionInput) {
     await editResourceAssignments(async (tx) => {
       const { row, metadata } = await accessible(clientId, actor, applicationPermissions.resources, tx);
       const [created] = await tx.insert(resourceServers).values({
-        audience: input.resourceId, name: input.name, scopes: unique(input.availableScopes), createdBy: actor.id,
+        audience: input.resourceId, name: input.name, createdBy: actor.id,
         secretHash: await hashNewResourceSecret(),
       }).onConflictDoNothing().returning({ audience: resourceServers.audience });
       if (!created) throw new InternalApplicationError(409, "conflict", "Resource already exists");
+      await replaceResourceScopes(tx, input.resourceId, input.availableScopes, input.upstreamScopes);
       await tx.update(oidcClients).set({
         resources: [...row.resources, input.resourceId],
         metadata: metadataPatch({ resourceScopes: { ...metadata.resourceScopes, [input.resourceId]: [] } }),
@@ -552,17 +586,18 @@ export function createInternalApplicationService(
     invalidateClient(clientId);
   }
 
-  async function updateResource(clientId: string, actor: ApplicationActor, input: { resourceId: string; name: string; availableScopes: string[] }) {
+  async function updateResource(clientId: string, actor: ApplicationActor, input: ResourceDefinitionInput) {
     await editResourceAssignments(async (tx) => {
       const { row } = await accessible(clientId, actor, applicationPermissions.resources, tx);
       if (!row.resources.includes(input.resourceId)) throw new InternalApplicationError(404, "not_found", "Resource not found");
-      const resource = requireResourceAccess(actor, await resourceRow(input.resourceId, tx), "update");
+      const resource = await lockResourceForScopeUpdate(tx, input.resourceId, actor);
       if ((await attachedClients(tx, input.resourceId)).length > 1) {
         throw new InternalApplicationError(409, "resource_shared", "Shared resources cannot be edited from an application");
       }
       const scopes = unique(input.availableScopes);
       await assertScopesCoverAssignments(tx, resource, scopes);
-      await tx.update(resourceServers).set({ name: input.name, scopes, updatedAt: new Date() })
+      await replaceResourceScopes(tx, input.resourceId, scopes, input.upstreamScopes);
+      await tx.update(resourceServers).set({ name: input.name, updatedAt: new Date() })
         .where(eq(resourceServers.audience, input.resourceId));
     });
   }
@@ -591,7 +626,7 @@ export function createInternalApplicationService(
   async function updateScopes(clientId: string, actor: ApplicationActor, input: Record<string, string[]>) {
     await editResourceAssignments(async (tx) => {
       const { row, metadata } = await accessible(clientId, actor, applicationPermissions.resources, tx);
-      const resources = await tx.select().from(resourceServers).where(inArray(resourceServers.audience, row.resources));
+      const resources = await tx.select(resourceWithScopes).from(resourceServers).where(inArray(resourceServers.audience, row.resources));
       const visible = resources.filter((resource) => canAccessResource(actor, resource, "read"));
       const visibleIds = new Set(visible.map((resource) => resource.audience));
       if (Object.keys(input).some((resource) => !visibleIds.has(resource))) {

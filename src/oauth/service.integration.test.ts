@@ -17,6 +17,7 @@ import {
   oidcPermissions,
   organizations,
   refreshTokens,
+  resourceServerScopes,
   resourceServers,
   userApplications,
   userPermissions,
@@ -103,6 +104,32 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
 
   afterAll(async () => {
     await close?.();
+  });
+
+  it("preserves upstream mappings for scopes retained by resource seeding", async () => {
+    const audience = "urn:basis:api:scope-mapping-test";
+    const loadScopes = () => db.select().from(resourceServerScopes)
+      .where(eq(resourceServerScopes.audience, audience)).orderBy(resourceServerScopes.scope);
+    try {
+      await seedConfiguration(db, [], [{ audience, scopes: ["calendar.read"] }]);
+      await expect(loadScopes()).resolves.toEqual([
+        { audience, scope: "calendar.read", upstreamScope: null },
+      ]);
+      await db.update(resourceServerScopes).set({ upstreamScope: "Calendar.read" })
+        .where(eq(resourceServerScopes.audience, audience));
+      await seedConfiguration(db, [], [{ audience, scopes: ["calendar.read", "projects.read"] }]);
+      await expect(loadScopes()).resolves.toEqual([
+        { audience, scope: "calendar.read", upstreamScope: "Calendar.read" },
+        { audience, scope: "projects.read", upstreamScope: null },
+      ]);
+      await seedConfiguration(db, [], [{ audience, scopes: ["calendar.read"] }]);
+      await expect(loadScopes()).resolves.toEqual([
+        { audience, scope: "calendar.read", upstreamScope: "Calendar.read" },
+      ]);
+    } finally {
+      await db.delete(resourceServers).where(eq(resourceServers.audience, audience));
+    }
+    await expect(loadScopes()).resolves.toEqual([]);
   });
 
   it("verifies a configured webhook before saving it and preserves it unless explicitly cleared", async () => {
@@ -194,15 +221,36 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
       await expect(verifyResource(resourceId, newSecret)).resolves.toBe(true);
       await expect(applications.resourceDetail(resourceId, owner)).resolves.not.toHaveProperty("resourceSecret");
 
+      await expect(applications.updateResourceScope(resourceId, owner, {
+        action: "add", scope: "test.read", upstreamScope: "Calendar.read",
+      })).resolves.toMatchObject({ upstreamScopes: { "test.read": "Calendar.read" } });
       await applications.updateResourceScope(resourceId, owner, { action: "add", scope: "test.read" });
       await applications.updateResourceScope(resourceId, owner, { action: "add", scope: "test.all" });
+      await applications.updateResource(clientId, owner, {
+        resourceId,
+        name: `${settings.name} API`,
+        availableScopes: ["test.read", "test.all"],
+        upstreamScopes: { "test.all": "Files.Read" },
+      });
+      await expect(applications.detail(clientId, owner)).resolves.toMatchObject({
+        resources: [{ upstreamScopes: { "test.read": "Calendar.read", "test.all": "Files.Read" } }],
+      });
+      await expect(applications.updateResourceScope(resourceId, othersOnly, {
+        action: "update", scope: "test.read", upstreamScope: null,
+      })).rejects.toMatchObject({ status: 403 });
+      await expect(applications.updateResourceScope(resourceId, owner, {
+        action: "update", scope: "test.read", upstreamScope: null,
+      })).resolves.toMatchObject({ upstreamScopes: { "test.read": null } });
+      await expect(applications.updateResourceScope(resourceId, owner, {
+        action: "update", scope: "test.missing", upstreamScope: "Calendar.read",
+      })).rejects.toMatchObject({ status: 404, code: "scope_not_found" });
       await applications.updateScopes(clientId, owner, { [resourceId]: ["test.read"] });
       await expect(applications.updateResourceScope(resourceId, owner, { action: "remove", scope: "test.read" }))
         .rejects.toMatchObject({ status: 409, code: "scope_in_use" });
       await expect(applications.deleteResource(resourceId, owner)).rejects.toMatchObject({ status: 409, code: "resource_in_use" });
       await applications.updateScopes(clientId, owner, { [resourceId]: [] });
       await expect(applications.updateResourceScope(resourceId, owner, { action: "remove", scope: "test.read" }))
-        .resolves.toMatchObject({ availableScopes: ["test.all"] });
+        .resolves.toMatchObject({ availableScopes: ["test.all"], upstreamScopes: { "test.all": "Files.Read" } });
 
       const internalApp = createInternalApp({ verifyResource }, createInternalUserService(db, emailDomains), {
         applications, keys, clientId: "portal", audience: config.managementPortalAudience, scope: config.managementPortalScope,

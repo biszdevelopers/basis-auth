@@ -7,6 +7,7 @@ import {
   type AppConfig,
 } from "../config.js";
 import type { Database } from "../database/client.js";
+import { resourceScopeNames } from "../database/resource-scopes.js";
 import {
   secretMatches,
   type ClientOwner,
@@ -45,7 +46,7 @@ const identityScopes = publicScopes;
 
 async function requireLoginResource(database: Pick<Database, "select">, audience: string) {
   const [resource] = await database.select({
-    scopes: resourceServers.scopes,
+    scopes: resourceScopeNames,
     backchannelLogoutUris: resourceServers.backchannelLogoutUris,
   }).from(resourceServers).where(eq(resourceServers.audience, audience)).limit(1);
   if (!resource) {
@@ -651,7 +652,7 @@ export function createOAuthService(
       throw new OAuthError("invalid_scope", "The client is not allowed to request one or more scopes for this resource", 400, 14401);
     }
     const [resourceServer] = await db
-      .select()
+      .select({ scopes: resourceScopeNames })
       .from(resourceServers)
       .where(eq(resourceServers.audience, resource))
       .limit(1);

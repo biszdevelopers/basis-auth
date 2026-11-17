@@ -338,6 +338,34 @@ describe("internal resource HTTP API", () => {
     "content-type": "application/json",
   };
 
+  it("accepts optional upstream mappings and rejects a list of upstream scopes", async () => {
+    const updateResourceScope = vi.fn().mockResolvedValue({
+      availableScopes: ["calendar.read"],
+      upstreamScopes: { "calendar.read": null },
+    });
+    const app = managementApp(
+      { updateResourceScope } as unknown as InternalApplicationService,
+      vi.fn().mockResolvedValue({ sub: user.id, client_id: "portal-client", scope: "noesis.access", permissions }),
+    );
+    const change = (body: object) => app.request(`/internal/resources/${encodeURIComponent(resourceId)}/scopes`, {
+      method: "PATCH", headers, body: JSON.stringify(body),
+    });
+    const scope = "calendar.read";
+    expect((await change({ action: "add", scope })).status).toBe(200);
+    expect((await change({ action: "add", scope, upstreamScope: " Calendar.read " })).status).toBe(200);
+    const clear = await change({ action: "update", scope, upstreamScope: null });
+    expect(clear.status).toBe(200);
+    expect(await clear.json()).toMatchObject({ resource: { upstreamScopes: { [scope]: null } } });
+    expect((await change({ action: "update", scope, upstreamScope: "Calendar.read Mail.Read" })).status).toBe(400);
+    expect((await change({ action: "update", scope })).status).toBe(400);
+    const actor = { id: user.id, permissions };
+    expect(updateResourceScope.mock.calls).toEqual([
+      [resourceId, actor, { action: "add", scope }],
+      [resourceId, actor, { action: "add", scope, upstreamScope: "Calendar.read" }],
+      [resourceId, actor, { action: "update", scope, upstreamScope: null }],
+    ]);
+  });
+
   it("reads, saves, and clears multiple webhooks using an encoded resource audience", async () => {
     const backchannelLogoutUris = [
       "https://projects.example.test/logout",

@@ -13,6 +13,7 @@ import {
   type PermissionDefinitions,
 } from "../src/config.js";
 import { createDatabase, type Database } from "../src/database/client.js";
+import { replaceResourceScopes, resourceWithScopes } from "../src/database/resource-scopes.js";
 import { createBackchannelVerifier } from "../src/internal/backchannel.js";
 import {
   hashClientSecret,
@@ -337,7 +338,7 @@ export interface ResourceDetail {
 }
 
 export async function listResources(db: Database): Promise<ResourceDetail[]> {
-  const resources = await db.select().from(resourceServers).orderBy(resourceServers.audience);
+  const resources = await db.select(resourceWithScopes).from(resourceServers).orderBy(resourceServers.audience);
   const clients = await db
     .select({ clientId: oidcClients.clientId, resources: oidcClients.resources })
     .from(oidcClients);
@@ -407,13 +408,14 @@ export async function ensureResourcesRegistered(
   const known = new Set(existing.map((row) => row.audience));
   const missing = registrations.filter((reg) => !known.has(reg.audience));
   for (const reg of missing) {
-    await db
-      .insert(resourceServers)
-      .values({
-        audience: reg.audience, name: reg.audience, scopes: reg.scopes,
-        secretHash: await hashNewResourceSecret(),
-      })
-      .onConflictDoNothing({ target: resourceServers.audience });
+    const secretHash = await hashNewResourceSecret();
+    await db.transaction(async (tx) => {
+      const [created] = await tx.insert(resourceServers)
+        .values({ audience: reg.audience, name: reg.audience, secretHash })
+        .onConflictDoNothing({ target: resourceServers.audience })
+        .returning({ audience: resourceServers.audience });
+      if (created) await replaceResourceScopes(tx, reg.audience, reg.scopes);
+    });
   }
   return missing.map((reg) => reg.audience);
 }
@@ -1260,12 +1262,10 @@ export async function runRegisterResourceFlow(db: Database): Promise<void> {
     const scopes = await promptScopes(rl, "Resource scopes", []);
     const backchannelLogoutUris = await promptBackchannelUris(rl, [], false);
     const secret = generateClientSecret();
-    await db.insert(resourceServers).values({
-      audience,
-      name: name || audience,
-      scopes,
-      secretHash: await hashClientSecret(secret),
-      backchannelLogoutUris: [],
+    const secretHash = await hashClientSecret(secret);
+    await db.transaction(async (tx) => {
+      await tx.insert(resourceServers).values({ audience, name: name || audience, secretHash });
+      await replaceResourceScopes(tx, audience, scopes);
     });
     let savedLogoutUris: string[] = [];
     if (backchannelLogoutUris?.length) {
@@ -1334,12 +1334,15 @@ export async function runEditResourceFlow(db: Database): Promise<void> {
       : requestedLogoutUris.length === 0
         ? []
         : await confirmBackchannelUris(db, rl, selected.audience, requestedLogoutUris) ?? undefined;
-    await db.update(resourceServers).set({
-      name: name || selected.audience,
-      scopes,
-      ...(acceptedLogoutUris === undefined ? {} : { backchannelLogoutUris: acceptedLogoutUris }),
-      updatedAt: new Date(),
-    }).where(eq(resourceServers.audience, selected.audience));
+    await db.transaction(async (tx) => {
+      const [updated] = await tx.update(resourceServers).set({
+        name: name || selected.audience,
+        ...(acceptedLogoutUris === undefined ? {} : { backchannelLogoutUris: acceptedLogoutUris }),
+        updatedAt: new Date(),
+      }).where(eq(resourceServers.audience, selected.audience)).returning({ audience: resourceServers.audience });
+      if (!updated) throw new Error(`Resource ${selected.audience} is no longer registered`);
+      await replaceResourceScopes(tx, selected.audience, scopes);
+    });
     process.stdout.write(`Updated resource ${selected.audience}\n`);
     if (acceptedLogoutUris?.length === 0) {
       process.stdout.write(

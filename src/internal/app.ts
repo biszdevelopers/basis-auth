@@ -206,7 +206,18 @@ export function createInternalApp(
 
   if (management) {
     const roleSchema = z.enum(["role.ADMIN", "role.GENERAL"]);
-    const resourceSchema = z.object({ resourceId: z.string().min(1), name: z.string().trim().min(1), availableScopes: z.array(z.string().min(1)).default([]) });
+    const oauthScope = /^[\x21\x23-\x5b\x5d-\x7e]+$/;
+    const upstreamScopeSchema = z.string().trim().regex(oauthScope, "Enter one valid upstream scope").nullable();
+    const resourceSchema = z.object({
+      resourceId: z.string().min(1),
+      name: z.string().trim().min(1),
+      availableScopes: z.array(z.string().min(1)).default([]),
+      upstreamScopes: z.record(z.string().min(1), upstreamScopeSchema).optional(),
+    }).refine(
+      ({ availableScopes, upstreamScopes }) =>
+        Object.keys(upstreamScopes ?? {}).every((scope) => availableScopes.includes(scope)),
+      { path: ["upstreamScopes"], message: "Upstream mappings require a scope in availableScopes" },
+    );
     const settingsSchema = z.object({
       name: z.string().trim().min(1).max(120),
       requireConsent: z.boolean(),
@@ -218,8 +229,10 @@ export function createInternalApp(
     const resourceScopeChangeSchema = z.discriminatedUnion("action", [
       z.object({
         action: z.literal("add"),
-        scope: z.string().trim().regex(/^[\x21\x23-\x5b\x5d-\x7e]+$/, "Enter one valid OAuth scope"),
+        scope: z.string().trim().regex(oauthScope, "Enter one valid OAuth scope"),
+        upstreamScope: upstreamScopeSchema.optional(),
       }),
+      z.object({ action: z.literal("update"), scope: z.string().min(1), upstreamScope: upstreamScopeSchema }),
       z.object({ action: z.literal("remove"), scope: z.string().min(1) }),
     ]);
     const logoutUrisSchema = z.object({

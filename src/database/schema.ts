@@ -177,12 +177,17 @@ export const oidcClientOrganizations = pgTable(
 export const resourceServers = pgTable("resource_servers", {
   audience: text("audience").primaryKey(),
   name: text("name").notNull(),
-  scopes: jsonb("scopes").notNull().$type<string[]>(),
   secretHash: text("secret_hash").notNull(),
   createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
   backchannelLogoutUris: jsonb("backchannel_logout_uris").notNull().default([]).$type<string[]>(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+export const resourceServerScopes = pgTable("resource_server_scopes", {
+  audience: text("audience").notNull().references(() => resourceServers.audience, { onDelete: "cascade" }),
+  scope: text("scope").notNull(),
+  upstreamScope: text("upstream_scope"),
+}, (table) => [primaryKey({ columns: [table.audience, table.scope] })]);
 
 export const backchannelVerifications = pgTable("backchannel_verifications", {
   nonce: text("nonce").primaryKey(),

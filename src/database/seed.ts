@@ -4,6 +4,7 @@ import { and, eq, inArray, notInArray, sql } from "drizzle-orm";
 import type { ClientSeed, PermissionDefinitions, ResourceSeed } from "../config.js";
 import { configuredLogoutUris } from "../config.js";
 import type { Database } from "./client.js";
+import { replaceResourceScopes } from "./resource-scopes.js";
 import { defaultPermissions, oidcClientOrganizations, oidcClients, oidcPermissions, organizations, resourceServers, users } from "./schema.js";
 import { portalScopedDefaults, portalScopedDefinitions, retiredPortalPermissions } from "../internal/portal-permissions.js";
 
@@ -104,22 +105,24 @@ export async function seedConfiguration(
     const configuredUris = configuredLogoutUris(resource);
     const settings = {
       name: resource.name ?? resource.audience,
-      scopes: resource.scopes,
       ...(configuredUris === undefined ? {} : { backchannelLogoutUris: configuredUris }),
     };
-    await db
-      .insert(resourceServers)
-      .values({
-        audience: resource.audience,
-        createdBy: root?.id,
-        secretHash: await hashNewResourceSecret(),
-        backchannelLogoutUris: configuredUris ?? [],
-        ...settings,
-      })
-      .onConflictDoUpdate({
-        target: resourceServers.audience,
-        set: { ...settings, updatedAt: new Date() },
-      });
+    const secretHash = await hashNewResourceSecret();
+    await db.transaction(async (tx) => {
+      await tx.insert(resourceServers)
+        .values({
+          audience: resource.audience,
+          createdBy: root?.id,
+          secretHash,
+          backchannelLogoutUris: configuredUris ?? [],
+          ...settings,
+        })
+        .onConflictDoUpdate({
+          target: resourceServers.audience,
+          set: { ...settings, updatedAt: new Date() },
+        });
+      await replaceResourceScopes(tx, resource.audience, resource.scopes);
+    });
   }
 
   for (const client of clients) {
