@@ -60,6 +60,7 @@ export async function createKeyService(config: AppConfig, identity: IdentityServ
       resource?: string;
       grantType?: "authorization_code" | "refresh_token";
       jti?: string;
+      lifetimeSeconds?: number;
     },
     preloaded?: { user?: UserState; permissions?: string[] },
   ) {
@@ -78,10 +79,11 @@ export async function createKeyService(config: AppConfig, identity: IdentityServ
       .setIssuer(config.issuer)
       .setSubject(input.userId);
     if (input.resource) token.setAudience(input.resource);
+    const issuedAt = Math.floor(Date.now() / 1000);
     return token
       .setJti(input.jti ?? randomToken())
-      .setIssuedAt()
-      .setExpirationTime(`${config.accessTokenLifetimeSeconds}s`)
+      .setIssuedAt(issuedAt)
+      .setExpirationTime(issuedAt + (input.lifetimeSeconds ?? config.accessTokenLifetimeSeconds))
       .sign(signingKey);
   }
 
@@ -89,7 +91,9 @@ export async function createKeyService(config: AppConfig, identity: IdentityServ
     clientId: string;
     scopes: string[];
     resource: string;
+    lifetimeSeconds?: number;
   }) {
+    const issuedAt = Math.floor(Date.now() / 1000);
     return new SignJWT({
       client_id: input.clientId,
       scope: input.scopes.join(" "),
@@ -101,8 +105,8 @@ export async function createKeyService(config: AppConfig, identity: IdentityServ
       .setSubject(input.clientId)
       .setAudience(input.resource)
       .setJti(randomToken())
-      .setIssuedAt()
-      .setExpirationTime(`${config.accessTokenLifetimeSeconds}s`)
+      .setIssuedAt(issuedAt)
+      .setExpirationTime(issuedAt + (input.lifetimeSeconds ?? config.accessTokenLifetimeSeconds))
       .sign(signingKey);
   }
 

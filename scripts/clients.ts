@@ -1280,7 +1280,7 @@ export async function runRegisterResourceFlow(db: Database): Promise<void> {
     process.stdout.write(`Resource secret (copy now, only a hash is stored): ${secret}\n`);
     if (!savedLogoutUris.length) {
       process.stdout.write(
-        "No backchannel logout URL: authorization-code sign-in and refresh for this resource fail with 14408 until one is configured.\n",
+        "No backchannel logout URL: new access tokens for this resource expire in at most 10 minutes.\n",
       );
     }
   } finally {
@@ -1346,7 +1346,7 @@ export async function runEditResourceFlow(db: Database): Promise<void> {
     process.stdout.write(`Updated resource ${selected.audience}\n`);
     if (acceptedLogoutUris?.length === 0) {
       process.stdout.write(
-        "Backchannel logout cleared: authorization-code sign-in and refresh for this resource now fail with 14408.\n",
+        "Backchannel logout cleared: new access tokens for this resource expire in at most 10 minutes.\n",
       );
     } else if (requestedLogoutUris !== undefined && acceptedLogoutUris === undefined) {
       process.stdout.write("Backchannel logout URLs were left unchanged.\n");

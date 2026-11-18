@@ -263,13 +263,7 @@ describe("authorization resource check", () => {
     ).rejects.toThrow('Resource server "urn:basis:api:missing" is not registered');
   });
 
-  it.each([
-    ["https://api.example.test/logout", true],
-    ["http://localhost:4321/logout", true],
-    [null, false],
-    ["http://api.example.test/logout", false],
-  ] as const)("checks the logout URL %s even for public OIDC scopes", async (backchannelLogoutUri, allowed) => {
-    const backchannelLogoutUris = backchannelLogoutUri === null ? [] : [backchannelLogoutUri];
+  it("starts authorization for a registered resource without a backchannel URL", async () => {
     const publicScopeClient = {
       ...clientRow,
       resources: ["urn:basis:api:test"],
@@ -281,7 +275,7 @@ describe("authorization resource check", () => {
         from: (table: unknown) => table === oidcClientOrganizations ? organizationQuery() : ({
           where: () => ({
             limit: () => table === resourceServers
-              ? [{ audience: "urn:basis:api:test", scopes: [], backchannelLogoutUris }]
+              ? [{ audience: "urn:basis:api:test", scopes: [], backchannelLogoutUris: [] }]
               : { prepare: () => ({ execute: clientExecute }) },
           }),
         }),
@@ -307,11 +301,7 @@ describe("authorization resource check", () => {
       codeChallenge: "a".repeat(43),
       codeChallengeMethod: "S256",
     });
-    if (allowed) {
-      await expect(authorization).resolves.toMatchObject({ interactionToken: expect.any(String) });
-    } else {
-      await expect(authorization).rejects.toMatchObject({ status: 400, error: "invalid_resource", code: 14408 });
-    }
+    await expect(authorization).resolves.toMatchObject({ interactionToken: expect.any(String) });
   });
 
   it("rejects an existing session when the client filter blocks its email", async () => {
@@ -462,7 +452,14 @@ describe("redirect URI matching", () => {
 });
 
 describe("client credentials grant", () => {
-  it("issues an application token for an authenticated confidential client", async () => {
+  it.each([
+    { backchannelLogoutUris: [], configuredLifetime: 3600, expectedLifetime: 600 },
+    { backchannelLogoutUris: [], configuredLifetime: 42, expectedLifetime: 42 },
+    { backchannelLogoutUris: ["http://api.example.test/logout"], configuredLifetime: 3600, expectedLifetime: 600 },
+    { backchannelLogoutUris: ["https://api.example.test/logout"], configuredLifetime: 3600, expectedLifetime: 3600 },
+  ])("issues an application token for $expectedLifetime seconds with $backchannelLogoutUris", async ({
+    backchannelLogoutUris, configuredLifetime, expectedLifetime,
+  }) => {
     const clientRow = {
       clientId: "application-id",
       secretHash: await hashClientSecret("application-secret"),
@@ -485,7 +482,7 @@ describe("client credentials grant", () => {
         from: (table: unknown) => table === oidcClientOrganizations ? organizationQuery() : ({
           where: () => ({
             limit: () => table === resourceServers
-              ? [{ audience: "urn:basis:api:projects", scopes: ["projects.read"] }]
+              ? [{ scopes: ["projects.read"], backchannelLogoutUris }]
               : { prepare: () => ({ execute }) },
           }),
         }),
@@ -493,7 +490,7 @@ describe("client credentials grant", () => {
     } as unknown as Parameters<typeof createOAuthService>[1];
     const issueApplicationAccessToken = vi.fn(async () => "application-token");
     const service = createOAuthService(
-      { issuer: "https://auth.example.test", accessTokenLifetimeSeconds: 42 } as AppConfig,
+      { issuer: "https://auth.example.test", accessTokenLifetimeSeconds: configuredLifetime } as AppConfig,
       db,
       { issueApplicationAccessToken } as unknown as KeyService,
       {} as IdentityService,
@@ -507,13 +504,14 @@ describe("client credentials grant", () => {
     })).resolves.toEqual({
       access_token: "application-token",
       token_type: "Bearer",
-      expires_in: 42,
+      expires_in: expectedLifetime,
       scope: "projects.read",
     });
     expect(issueApplicationAccessToken).toHaveBeenCalledWith({
       clientId: "application-id",
       scopes: ["projects.read"],
       resource: "urn:basis:api:projects",
+      lifetimeSeconds: expectedLifetime,
     });
   });
 });

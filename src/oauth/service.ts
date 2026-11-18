@@ -43,8 +43,9 @@ import { scopesCover } from "./scopes.js";
 // API capability granted by a particular resource server.
 const publicScopes = new Set(["openid", "profile", "email", "offline_access"]);
 const identityScopes = publicScopes;
+const maxAccessTokenLifetimeWithoutBackchannelSeconds = 10 * 60;
 
-async function requireLoginResource(database: Pick<Database, "select">, audience: string) {
+async function requireResource(database: Pick<Database, "select">, audience: string) {
   const [resource] = await database.select({
     scopes: resourceScopeNames,
     backchannelLogoutUris: resourceServers.backchannelLogoutUris,
@@ -55,16 +56,6 @@ async function requireLoginResource(database: Pick<Database, "select">, audience
       `Resource server "${audience}" is not registered; add it with "bun run clients" or OIDC_RESOURCES_JSON`,
       400,
       14407,
-    );
-  }
-  if (!resource.backchannelLogoutUris.some((uri) => backchannelLogoutUriSchema.safeParse(uri).success)) {
-    throw new OAuthError(
-      "invalid_resource",
-      `Resource server "${audience}" has no verified backchannel logout URL. ` +
-        "An administrator must add and verify at least one callback under " +
-        "Resource Servers -> Backchannel or OIDC_RESOURCES_JSON backchannelLogoutUris.",
-      400,
-      14408,
     );
   }
   return resource;
@@ -186,6 +177,13 @@ export function createOAuthService(
 
   const clientCache: ClientCache = createClientCache(clientById, { ttlMs: 60_000 });
 
+  function accessTokenLifetimeFor(backchannelLogoutUris: string[]) {
+    const hasBackchannel = backchannelLogoutUris.some((uri) => backchannelLogoutUriSchema.safeParse(uri).success);
+    return hasBackchannel
+      ? config.accessTokenLifetimeSeconds
+      : Math.min(config.accessTokenLifetimeSeconds, maxAccessTokenLifetimeWithoutBackchannelSeconds);
+  }
+
   function requireClient(
     client: CachedClient | undefined,
     clientId: string,
@@ -256,7 +254,7 @@ export function createOAuthService(
     if (!scopesCover(allowedScopes, resourceScopes)) {
       throw new OAuthError("invalid_scope", "The client is not allowed to request one or more scopes for this resource", 400, 14401);
     }
-    const resourceServer = await requireLoginResource(db, resource);
+    const resourceServer = await requireResource(db, resource);
     const customScopes = scopes.filter((scope) => !identityScopes.has(scope));
     if (!scopesCover(resourceServer.scopes, customScopes)) {
       throw new OAuthError("invalid_scope", "A requested scope is not supported by the resource", 400, 14401);
@@ -435,7 +433,7 @@ export function createOAuthService(
       if (!claimed?.userId || !claimed.authenticatedAt) {
         throw new OAuthError("invalid_request", "Authorization request is not ready");
       }
-      await requireLoginResource(tx, claimed.resource);
+      await requireResource(tx, claimed.resource);
       await tx.insert(authorizationCodes).values({
         codeHash,
         requestId: claimed.id,
@@ -485,14 +483,17 @@ export function createOAuthService(
     nonce?: string;
     authenticatedAt?: Date;
     grantType: "authorization_code" | "refresh_token";
-  }) {
+  }, lifetimeSeconds: number) {
     const permissions = await identity.permissionsFor(user.id, input.clientId, database);
     const accessTokenJti = randomToken();
-    const accessToken = await keys.issueAccessToken({ ...input, userId: user.id, jti: accessTokenJti }, { user, permissions });
+    const accessToken = await keys.issueAccessToken(
+      { ...input, userId: user.id, jti: accessTokenJti, lifetimeSeconds },
+      { user, permissions },
+    );
     const response: Record<string, unknown> = {
       access_token: accessToken,
       token_type: "Bearer",
-      expires_in: config.accessTokenLifetimeSeconds,
+      expires_in: lifetimeSeconds,
       scope: input.scopes.join(" "),
     };
     if (input.nonce && input.authenticatedAt) {
@@ -543,7 +544,6 @@ export function createOAuthService(
     if (authorizationCode.consumedAt) {
       throw new OAuthError("invalid_grant", "Authorization code was already used");
     }
-    await requireLoginResource(db, authorizationCode.resource);
     return db.transaction(async (tx) => {
       const [consumed] = await tx
         .update(authorizationCodes)
@@ -557,10 +557,13 @@ export function createOAuthService(
         .returning();
       if (!consumed) throw new OAuthError("invalid_grant", "Authorization code is invalid or was already used");
 
+      const resource = await requireResource(tx, consumed.resource);
       const [user] = await tx.select().from(users).where(eq(users.id, consumed.userId)).for("share");
       if (!user || user.disabled) throw new OAuthError("invalid_grant", "User is missing or disabled");
       await identity.registerApplicationLogin?.(user.id, consumed.clientId, tx);
-      const { response, accessTokenJti, accessTokenExpiresAt } = await issueTokenSet(tx, user, { ...consumed, grantType: "authorization_code" });
+      const { response, accessTokenJti, accessTokenExpiresAt } = await issueTokenSet(
+        tx, user, { ...consumed, grantType: "authorization_code" }, accessTokenLifetimeFor(resource.backchannelLogoutUris),
+      );
       const sessionId = consumed.requestId;
       const canRefresh = consumed.scopes.includes("offline_access");
       await tx.insert(authorizationSessions).values({
@@ -604,7 +607,7 @@ export function createOAuthService(
         return { error: "Refresh token reuse detected" };
       }
 
-      await requireLoginResource(tx, session.resource);
+      const resource = await requireResource(tx, session.resource);
       const user = await identity.findUser(session.userId, tx);
       if (!user || user.disabled) {
         await tx.update(authorizationSessions).set({ revokedAt: new Date() }).where(eq(authorizationSessions.id, session.id));
@@ -615,7 +618,7 @@ export function createOAuthService(
         scopes: session.scopes,
         resource: session.resource,
         grantType: "refresh_token",
-      });
+      }, accessTokenLifetimeFor(resource.backchannelLogoutUris));
       await tx.update(refreshTokens).set({ consumedAt: new Date() }).where(eq(refreshTokens.tokenHash, tokenHash));
       response.refresh_token = await issueRefreshToken(tx, session.id);
       await tx.update(authorizationSessions).set({ accessTokenJti, accessTokenExpiresAt }).where(eq(authorizationSessions.id, session.id));
@@ -651,31 +654,21 @@ export function createOAuthService(
     if (!scopesCover(allowedScopes, scopes)) {
       throw new OAuthError("invalid_scope", "The client is not allowed to request one or more scopes for this resource", 400, 14401);
     }
-    const [resourceServer] = await db
-      .select({ scopes: resourceScopeNames })
-      .from(resourceServers)
-      .where(eq(resourceServers.audience, resource))
-      .limit(1);
-    if (!resourceServer) {
-      throw new OAuthError(
-        "invalid_target",
-        `Resource server "${resource}" is not registered; add it with "bun run clients" or OIDC_RESOURCES_JSON`,
-        400,
-        14407,
-      );
-    }
+    const resourceServer = await requireResource(db, resource);
     if (!scopesCover(resourceServer.scopes, scopes)) {
       throw new OAuthError("invalid_scope", "A requested scope is not supported by the resource", 400, 14401);
     }
 
+    const lifetimeSeconds = accessTokenLifetimeFor(resourceServer.backchannelLogoutUris);
     return {
       access_token: await keys.issueApplicationAccessToken({
         clientId: client.clientId,
         scopes,
         resource,
+        lifetimeSeconds,
       }),
       token_type: "Bearer",
-      expires_in: config.accessTokenLifetimeSeconds,
+      expires_in: lifetimeSeconds,
       scope: scopes.join(" "),
     };
   }

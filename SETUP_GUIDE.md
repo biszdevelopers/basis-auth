@@ -16,7 +16,7 @@ It does **not** cover deploying or operating basis-auth itself. For that, see
 - Each access token is bound to exactly one registered resource audience.
 - Access tokens carry app-scoped `permissions` in addition to OAuth scopes.
 - Your app owns its browser session. Never share or forward `basis_sso`.
-- Your resource also needs a backchannel logout endpoint; see section 5.
+- Register a backchannel endpoint to receive logout and revocation events. See section 5.
 
 | Endpoint | Use |
 | --- | --- |
@@ -44,6 +44,12 @@ A user access token contains `sub`, `client_id`, `scope`, `permissions`, `gty`,
 `jti`, `iat`, `exp`, `iss`, and `aud`. `permissions` is always a string array.
 It is not an OAuth scope and must not be requested as one.
 
+When the resource has no valid saved backchannel URL, the access-token lifetime
+is the lesser of `ACCESS_TOKEN_LIFETIME_MS` and 10 minutes. This applies to code
+exchange, refresh, and client credentials. Use the token response's `expires_in`
+(in seconds) or the JWT's `exp` to determine expiry. Adding or clearing URLs
+affects newly issued tokens. Previously issued tokens keep their signed expiry.
+
 The stable user key is the basis-auth `sub`. Email is profile data and can
 change; do not use it as a durable foreign key across your database.
 
@@ -62,15 +68,14 @@ separately; never reuse a client across environments.
 - [ ] Permission definitions and first-login defaults for your client.
 - [ ] Resource secret for each resource your app owns or receives callbacks for.
       It is shown once and is required for backchannel verification.
-- [ ] The backchannel logout URL(s) registered for each resource.
+- [ ] The backchannel logout URL(s) registered for each resource, if configured.
 - [ ] Internal API base URL, if your service calls the private management or
       user endpoints.
 - [ ] Organization/tenant and account-filter restrictions that apply to you.
 
-A resource must have at least one valid backchannel logout URL before
-authorization-code sign-in works. Without one, authorization returns
-`14408 invalid_resource`. A resource may register multiple URLs; logout and
-access-token revocation events fan out to all of them.
+Authorization-code sign-in works with or without a saved backchannel URL.
+A resource may register multiple valid URLs for logout and access-token
+revocation events.
 
 If you operate basis-auth as well, registration is covered in section 3.
 Otherwise, send the operator the values they ask for; most of section 3 is
@@ -292,13 +297,14 @@ per-request token validation.
   before another request can use the session.
 - Reuse of a consumed or expired token revokes the whole session family. Treat
   `invalid_grant` as "clear refresh state and require a new sign-in".
-- Refreshing a resource that has no valid backchannel URL fails with
-  `14408 invalid_resource` before the token is consumed.
+- Refresh uses the resource's current backchannel configuration to determine
+  the new access token's lifetime. Schedule the next refresh using the new
+  `expires_in` value.
 
 ## 5. Backchannel logout and revocation receiver
 
-Each resource needs at least one receiver URL that handles three event types on
-the same endpoint:
+To receive callbacks, register at least one receiver URL that handles three
+event types on the same endpoint:
 
 1. `action=test` webhook verification;
 2. `logout_token` user logout;
@@ -306,6 +312,11 @@ the same endpoint:
 
 A resource may register multiple URLs; every configured URL receives logout and
 access-token revocation events, and each URL is verified separately.
+
+Without a valid saved URL, the API receives neither event. An API that relies
+on callbacks for revocation can continue accepting a signed token until it expires.
+The resource registration CLI reports the 10-minute cap when registering a
+resource without callbacks or clearing its callbacks.
 
 ### 5.1 Verify the webhook
 
@@ -539,11 +550,20 @@ Run against the target issuer before declaring the integration done:
       permission.
 - [ ] API returns the standard `401 invalid_token` response for revoked,
       expired, and malformed tokens.
+- [ ] For a resource without a backchannel URL, sign-in succeeds and each
+      applicable grant returns `expires_in` equal to the JWT's `exp - iat`, at
+      most 600 seconds.
+
+For resources with a backchannel receiver:
+
 - [ ] Backchannel `action=test` verification succeeds and saves the URL.
 - [ ] Logout ends the app session and terminates the matching user's API
       sessions through `logout_token`.
-- [ ] Refresh rotates the token and a reused token forces re-authentication.
 - [ ] A revoked access token is denied after the delivered revocation event.
+
+For all resources:
+
+- [ ] Refresh rotates the token and a reused token forces re-authentication.
 - [ ] Disabled users cannot sign in and existing tokens are rejected as
       configured.
 - [ ] Unregistered resources, scopes, and redirect URIs fail closed with the
@@ -695,7 +715,6 @@ into a support request.
 | `14100` | Redirect URI missing or unregistered | Compare character-for-character. |
 | `14401` | Scope not allowed | Align resource scopes, client scopes, and request. |
 | `14407` | Resource not registered | Register the audience. |
-| `14408` | Resource has no valid backchannel logout URL | Configure and verify at least one webhook. |
 | `14429` | Unsupported response type | Send `response_type=code`. |
 | `14501` | Resource not registered for this client | Add the audience to the client. |
 | `2400` | Interaction missing or expired | Restart authorization. |

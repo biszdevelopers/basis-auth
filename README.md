@@ -67,7 +67,7 @@ Production must set `NODE_ENV=production`, an HTTPS `OIDC_ISSUER`, persistent pr
 
 `OIDC_RESOURCES_JSON` declares API audiences, display names, and the scopes each API accepts. A client claims one or more resources, and `OIDC_CLIENTS_JSON` declares its allowed scopes per resource through `resourceScopes` (the legacy flat `scopes` list remains a fallback). The standard `openid`, `profile`, `email`, and `offline_access` scopes are public to every registered client and do not need to be listed in either configuration.
 
-A resource can optionally set one or more `backchannelLogoutUris` in `OIDC_RESOURCES_JSON`; the legacy single `backchannelLogoutUri` field is still accepted. Use HTTPS or an HTTP URL with the exact hostname `localhost`. Basis Auth verifies each new URL after the internal listener starts. Set the list to `[]` to clear stored callbacks. Access tokens default to 60 minutes, configurable with `ACCESS_TOKEN_LIFETIME_MS`.
+A resource can optionally set one or more `backchannelLogoutUris` in `OIDC_RESOURCES_JSON`; the legacy single `backchannelLogoutUri` field is still accepted. Use HTTPS or an HTTP URL with the exact hostname `localhost`. Basis Auth verifies each new URL after the internal listener starts. Set the list to `[]` to clear stored callbacks. Access tokens default to 60 minutes, configurable with `ACCESS_TOKEN_LIFETIME_MS`. Resources without a valid saved callback support sign-in and refresh with access tokens capped at 10 minutes. The cap also applies to client-credentials tokens.
 
 Before upgrading a database with existing resource servers, set `BASIS_RESOURCE_ROOT_USER_ID` to the UUID of the existing root user and set `MANAGEMENT_PORTAL_CLIENT_ID` to the management portal client. The migrations assign existing resource servers to that user and backfill the portal's own-application and own-resource grants. Existing portal sessions pick up the new grants when their access token refreshes or the user signs in again.
 
@@ -219,7 +219,6 @@ These are NOT Http response codes.
 | 14429 | unsupported_response_type | Unsupported response type |
 | 14401 | invalid_scope | Client requests one or more scopes that is not configured or permitted |
 | 14407 | unknown_resource | The requested resource audience has no `resource_servers` row. The error names the audience; register it by re-saving the client via `bun run clients` or adding it to `OIDC_RESOURCES_JSON` and restarting. |
-| 14408 | invalid_resource | The resource has no valid backchannel logout URL. An administrator must add and verify at least one callback under Resource Servers → Backchannel or `OIDC_RESOURCES_JSON` `backchannelLogoutUris`. This also applies to the development demo and the portal's own resource. |
 | 14501 | invalid_target | One or more resources is not registered for this application |
 | 2400 | invalid_request | Frontend authentication flow cookie not found or expired |
 | 50040 | server_error | Internal server error occured during login, such as connection error with microsoft login / authentication endpoint |

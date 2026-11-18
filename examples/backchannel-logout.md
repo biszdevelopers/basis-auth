@@ -47,7 +47,7 @@ async function validateWebhook({ internalApiUrl, audience, resourceSecret, nonce
 
 Basis Auth saves a URL after it receives both the receiver's `202` and valid proof. The previous list stays active if verification fails. Clearing the list takes effect immediately. URLs configured through `OIDC_RESOURCES_JSON` go through the same checks after the internal listener starts.
 
-Authorization-code sign-in requires at least one valid saved webhook for the requested resource. A missing or invalid list produces `14408: invalid_resource`. To bootstrap the portal's own resource before you can sign in, configure its webhook through `OIDC_RESOURCES_JSON` and start the receiver with its resource secret.
+Authorization-code sign-in works without a valid saved webhook. For those resources, newly issued access tokens have a maximum lifetime of 10 minutes across code exchange, refresh, and client credentials. To enable callback delivery and use the configured access-token lifetime, verify a webhook for the resource.
 
 ## Receive logout events
 
@@ -57,7 +57,7 @@ Verify the logout token signature against Basis Auth's `/oauth/jwks`. Require `a
 
 ## Receive access-token revocations
 
-Basis Auth posts to every configured URL when an access token is replaced by refresh or explicitly revoked. Expired access tokens are rejected during normal JWT validation. A refresh for an audience without a valid saved URL fails with `14408: invalid_resource` before consuming the refresh token.
+Basis Auth posts to every valid saved URL when an access token is replaced by refresh or explicitly revoked. For APIs that rely on webhooks for revocation, a token can remain usable until expiry when the resource has no valid callback. Expired access tokens are rejected during normal JWT validation.
 
 The form body contains `action=revoke_access_token`, the revoked access token's `jti`, `valid_after` as a Unix timestamp in seconds, and a signed `revocation_token`. `ACCESS_TOKEN_REVOCATION_GRACE_SECONDS` controls how far in the future `valid_after` is set and defaults to `0`.
 

@@ -418,7 +418,7 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
     const setLogoutUri = (backchannelLogoutUris: string[]) =>
       db.update(resourceServers).set({ backchannelLogoutUris })
         .where(eq(resourceServers.audience, resourceAudience));
-    await setLogoutUri([logoutUri]);
+    await setLogoutUri([]);
     const user = await identity.upsertFromMicrosoft({
       provider: "basischina-microsoft",
       issuer: "https://login.microsoftonline.com/tenant/v2.0",
@@ -440,10 +440,6 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
       codeChallengeMethod: "S256",
       session: { userId: user.id, authenticatedAt: new Date() },
     });
-    await setLogoutUri([]);
-    await expect(oauth.completeAuthorization(started.id))
-      .rejects.toMatchObject({ error: "invalid_resource", code: 14408 });
-    await setLogoutUri([logoutUri]);
     const redirect = new URL(await oauth.completeAuthorization(started.id));
     const code = redirect.searchParams.get("code")!;
     const exchangeRequest = {
@@ -453,12 +449,16 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
       redirectUri: "https://portal.example.test/callback",
       codeVerifier: verifier,
     };
-    await setLogoutUri([]);
-    await expect(oauth.exchangeAuthorizationCode(exchangeRequest))
-      .rejects.toMatchObject({ error: "invalid_resource", code: 14408 });
-    await setLogoutUri([logoutUri]);
     const tokens = await oauth.exchangeAuthorizationCode(exchangeRequest);
     const access = await keys.verifyAccessToken(String(tokens.access_token));
+    expect(tokens.expires_in).toBe(600);
+    expect(access.exp - access.iat).toBe(600);
+    const applicationTokens = await oauth.exchangeClientCredentials({
+      clientId: "portal", clientSecret: "portal-secret-long-enough", resource: resourceAudience,
+    });
+    const applicationAccess = await keys.verifyAccessToken(applicationTokens.access_token);
+    expect(applicationTokens.expires_in).toBe(600);
+    expect(applicationAccess.exp - applicationAccess.iat).toBe(600);
     const expectedPortalPermissions = ["nethack.Projects.read", ...portalScopedDefaults].sort();
     expect(access).toMatchObject({
       sub: user.id,
@@ -476,6 +476,7 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
       applicationId: "portal",
       permission: "integration.live-default",
     }).onConflictDoNothing();
+    await setLogoutUri([logoutUri]);
     const repeatPortalLogin = await oauth.startAuthorization({
       initialUri: "/oauth/authorize",
       clientId: "portal",
@@ -498,6 +499,8 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
       codeVerifier: verifier,
     });
     const repeatAccess = await keys.verifyAccessToken(String(repeated.access_token));
+    expect(repeated.expires_in).toBe(config.accessTokenLifetimeSeconds);
+    expect(repeatAccess.exp - repeatAccess.iat).toBe(config.accessTokenLifetimeSeconds);
     expect(repeatAccess).toMatchObject({
       client_id: "portal",
       permissions: expectedPortalPermissions,
@@ -564,16 +567,13 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
     using send = vi.spyOn(globalThis, "fetch")
       .mockRejectedValueOnce(new Error("connection lost"))
       .mockImplementation(async () => new Response(null, { status: 204 }));
-    await setLogoutUri([]);
-    await expect(oauth.exchangeRefreshToken(refreshRequest)).rejects.toMatchObject({ error: "invalid_resource", code: 14408 });
-    await expect(loadSession()).resolves.toEqual([session]);
-    expect(send).not.toHaveBeenCalled();
-    await setLogoutUri([logoutUri]);
     const beforeRefresh = Math.floor(Date.now() / 1000);
     const rotated = await oauth.exchangeRefreshToken(refreshRequest);
     expect(rotated.refresh_token).toEqual(expect.any(String));
     expect(rotated.refresh_token).not.toBe(firstRefresh);
     const rotatedAccess = await keys.verifyAccessToken(String(rotated.access_token));
+    expect(rotated.expires_in).toBe(config.accessTokenLifetimeSeconds);
+    expect(rotatedAccess.exp - rotatedAccess.iat).toBe(config.accessTokenLifetimeSeconds);
     expect(rotatedAccess.jti).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(rotatedAccess.jti).not.toBe(access.jti);
     await expect(loadSession()).resolves.toEqual([{
@@ -613,6 +613,12 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
       gty: "refresh_token",
       permissions: expectedPortalPermissions,
     });
+    await setLogoutUri([]);
+    const capped = await oauth.exchangeRefreshToken({ ...refreshRequest, refreshToken: String(rotated.refresh_token) });
+    const cappedAccess = await keys.verifyAccessToken(String(capped.access_token));
+    expect(capped.expires_in).toBe(600);
+    expect(cappedAccess.exp - cappedAccess.iat).toBe(600);
+    await setLogoutUri([logoutUri]);
     await db
       .delete(defaultPermissions)
       .where(eq(defaultPermissions.applicationId, "portal"));
@@ -626,7 +632,7 @@ describe.skipIf(!runIntegration)("OAuth flow with PostgreSQL", () => {
     await expect(loadSession()).resolves.toEqual([expect.objectContaining({ revokedAt: expect.any(Date) })]);
     await expect(
       oauth.exchangeRefreshToken({
-        refreshToken: String(rotated.refresh_token),
+        refreshToken: String(capped.refresh_token),
         clientId: "portal",
         clientSecret: "portal-secret-long-enough",
       }),
